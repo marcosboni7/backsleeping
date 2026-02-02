@@ -155,29 +155,39 @@ app.post('/login', async (req, res) => {
 
 // --- COMENTÁRIOS (ADICIONADO PARA CORRIGIR O ERRO JSON) ---
 app.post('/posts/:id/comments', async (req, res) => {
-  const post_id = req.params.id;
-  const { user_id, content } = req.body;
+  const post_id = parseInt(req.params.id);
+  const user_id = parseInt(req.body.user_id);
+  const { content } = req.body;
+
+  // VERIFICAÇÃO DE SEGURANÇA: Se algum ID for NaN, ele avisa o App
+  if (isNaN(post_id) || isNaN(user_id)) {
+    console.error(`❌ Erro de Dados: PostID=${req.params.id}, UserID=${req.body.user_id}`);
+    return res.status(400).json({ 
+      error: "ID do post ou do usuário inválido (NaN). Verifique se o usuário está logado." 
+    });
+  }
+
+  if (!content || content.trim() === '') {
+    return res.status(400).json({ error: "O comentário não pode estar vazio." });
+  }
 
   try {
-    // 1. Insere o comentário
     const [newComment] = await db('comments').insert({
-      post_id: Number(post_id),
-      user_id: Number(user_id),
+      post_id: post_id,
+      user_id: user_id,
       content: content
     }).returning('*');
     
-    // 2. Busca os dados do autor para o App exibir o comentário na hora
     const commentWithUser = await db('comments')
       .join('users', 'comments.user_id', 'users.id')
       .where('comments.id', newComment.id)
       .select('comments.*', 'users.username', 'users.avatar_url', 'users.aura_color')
       .first();
 
-    // 3. Retorna JSON (Isso evita o erro de "Unexpected character <")
     res.status(201).json(commentWithUser);
   } catch (err) {
-    console.error("Erro ao comentar:", err);
-    res.status(500).json({ error: "Erro ao salvar comentário" });
+    console.error("❌ Erro no Banco:", err.message);
+    res.status(500).json({ error: "Erro ao salvar no banco de dados." });
   }
 });
 
