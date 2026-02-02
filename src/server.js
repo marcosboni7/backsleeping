@@ -4,8 +4,8 @@ const db = require('./config/db');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const multer = require('multer'); 
-const path = require('path');   
-const fs = require('fs');       
+const path = require('path');    
+const fs = require('fs');        
 const http = require('http'); 
 const { Server } = require('socket.io'); 
 
@@ -24,7 +24,7 @@ app.use(cors());
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '100mb', extended: true }));
 
-// --- CONFIGURAÇÃO DO MULTER (AJUSTADO PARA RENDER) ---
+// --- CONFIGURAÇÃO DO MULTER (ARMAZENAMENTO LOCAL TEMPORÁRIO) ---
 const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)){
     fs.mkdirSync(uploadDir, { recursive: true });
@@ -56,10 +56,8 @@ io.on('connection', (socket) => {
     socket.join(roomName);
     try {
       const messages = await db('messages')
-        .leftJoin('users', 'messages.user', 'users.username')
         .where({ room: roomName })
-        .select('messages.*', 'users.role') 
-        .orderBy('messages.created_at', 'asc')
+        .orderBy('created_at', 'asc')
         .limit(50);
         
       socket.emit('previous_messages', messages);
@@ -70,26 +68,25 @@ io.on('connection', (socket) => {
 
   socket.on('send_message', async (data) => {
     try {
+      // Busca dados atualizados do usuário para o chat
       const userRecord = await db('users').where({ username: data.user }).first();
-      const currentRole = userRecord?.role || 'user';
-
-      const messageToBroadcast = {
-        ...data,
-        id: String(Date.now() + Math.random()),
-        created_at: new Date(),
-        role: currentRole
-      };
-
-      io.to(data.room).emit('receive_message', messageToBroadcast);
-
-      await db('messages').insert({
+      
+      const messageToSave = {
         room: String(data.room),
         user: String(data.user),
         text: String(data.text),
-        aura_color: String(data.auraColor || '#fff'),
-        aura_name: String(data.auraName || 'Iniciante'),
+        aura_color: userRecord?.aura_color || '#ffffff',
+        aura_name: userRecord?.xp >= 1000 ? 'Mestre' : 'Iniciante',
+        role: userRecord?.role || 'user',
         created_at: new Date()
-      });
+      };
+
+      // Salva no banco
+      const [insertedMsg] = await db('messages').insert(messageToSave).returning('*');
+
+      // Envia para todos na sala
+      io.to(data.room).emit('receive_message', insertedMsg);
+
     } catch (err) {
       console.error("❌ Erro ao salvar mensagem:", err.message);
     }
@@ -114,7 +111,8 @@ app.post('/register', async (req, res) => {
       password: hashedPassword,
       balance: 1000,
       role: 'user',
-      xp: 0
+      xp: 0,
+      aura_color: '#ffffff'
     }).returning('*');
     
     res.status(201).json({ 
@@ -146,7 +144,8 @@ app.post('/login', async (req, res) => {
         role: user.role,
         xp: user.xp || 0,
         bio: user.bio || '',
-        avatar_url: user.avatar_url || null
+        avatar_url: user.avatar_url || null,
+        aura_color: user.aura_color
       }
     });
   } catch (err) {
@@ -154,38 +153,53 @@ app.post('/login', async (req, res) => {
   }
 });
 
-// --- PERFIL E USUÁRIOS ---
-app.post('/users/:id/follow', async (req, res) => {
-  const followerId = req.body.followerId; 
-  const followingId = req.params.id;
+// --- COMENTÁRIOS (ADICIONADO PARA CORRIGIR O ERRO JSON) ---
+app.post('/posts/:id/comments', async (req, res) => {
+  const post_id = req.params.id;
+  const { user_id, content } = req.body;
   try {
-    const existingFollow = await db('follows')
-      .where({ follower_id: followerId, following_id: followingId })
+    const [newComment] = await db('comments').insert({
+      post_id,
+      user_id,
+      content
+    }).returning('*');
+    
+    const commentWithUser = await db('comments')
+      .join('users', 'comments.user_id', 'users.id')
+      .where('comments.id', newComment.id)
+      .select('comments.*', 'users.username', 'users.avatar_url', 'users.aura_color')
       .first();
 
-    if (existingFollow) {
-      await db('follows').where({ follower_id: followerId, following_id: followingId }).del();
-      return res.json({ followed: false });
-    } else {
-      await db('follows').insert({ 
-        follower_id: Number(followerId), 
-        following_id: Number(followingId) 
-      });
-      return res.json({ followed: true });
-    }
+    res.status(201).json(commentWithUser);
   } catch (err) {
-    res.status(500).json({ error: "Erro no sistema de follow" });
+    res.status(500).json({ error: "Erro ao comentar" });
   }
 });
 
+app.get('/posts/:id/comments', async (req, res) => {
+  try {
+    const comments = await db('comments')
+      .join('users', 'comments.user_id', 'users.id')
+      .where({ post_id: req.params.id })
+      .select('comments.*', 'users.username', 'users.avatar_url', 'users.aura_color')
+      .orderBy('created_at', 'asc');
+    res.json(comments);
+  } catch (err) {
+    res.status(500).json({ error: "Erro ao buscar comentários" });
+  }
+});
+
+// --- PERFIL E USUÁRIOS ---
 app.get('/users/:id/profile', async (req, res) => {
   const targetId = Number(req.params.id);
   const currentUserId = Number(req.query.currentUserId);
   try {
-    const user = await db('users').where({ id: targetId }).select('id', 'username', 'balance', 'bio', 'avatar_url', 'role', 'xp').first();
+    const user = await db('users').where({ id: targetId }).select('id', 'username', 'balance', 'bio', 'avatar_url', 'role', 'xp', 'aura_color').first();
     if (!user) return res.status(404).json({ error: "Usuário não encontrado" });
+    
     const followersCount = await db('follows').where({ following_id: targetId }).count('id as count').first();
     const followingCount = await db('follows').where({ follower_id: targetId }).count('id as count').first();
+    
     let isFollowing = false;
     if (currentUserId) {
         const followCheck = await db('follows').where({ follower_id: currentUserId, following_id: targetId }).first();
@@ -198,8 +212,6 @@ app.get('/users/:id/profile', async (req, res) => {
 app.put('/users/:id', uploadFields, async (req, res) => {
   const { id } = req.params;
   const { username, bio } = req.body;
-  
-  // Lógica de URL Dinâmica robusta:
   const protocol = req.headers['x-forwarded-proto'] || req.protocol;
   const host = req.get('host');
   const baseUrl = `${protocol}://${host}`;
@@ -212,14 +224,6 @@ app.put('/users/:id', uploadFields, async (req, res) => {
     const [updatedUser] = await db('users').where({ id }).update(dataToUpdate).returning('*');
     res.json({ message: "Sua essência foi atualizada!", user: updatedUser });
   } catch (err) { res.status(500).json({ error: "Falha ao atualizar perfil." }); }
-});
-
-// --- TRANSAÇÕES (CARTEIRA) ---
-app.get('/transactions/:userId', async (req, res) => {
-  try {
-    const transactions = await db('transactions').where({ user_id: req.params.userId }).orderBy('created_at', 'desc').limit(30);
-    res.json(transactions);
-  } catch (err) { res.status(500).json({ error: "Erro ao buscar histórico" }); }
 });
 
 // --- POSTS ---
@@ -246,7 +250,7 @@ app.post('/posts/upload', uploadFields, async (req, res) => {
     
     res.status(201).json(newPost);
   } catch (err) { 
-    console.error("ERRO NO UPLOAD:", err); // Log para você ver no Render
+    console.error("ERRO NO UPLOAD:", err);
     res.status(500).json({ error: "Falha ao publicar" }); 
   }
 });
@@ -256,7 +260,7 @@ app.get('/posts', async (req, res) => {
   const currentUserId = userId && userId !== 'undefined' ? Number(userId) : 0;
   try {
     let query = db('posts').join('users', 'posts.user_id', 'users.id')
-      .select('posts.*', 'users.username', 'users.avatar_url',
+      .select('posts.*', 'users.username', 'users.avatar_url', 'users.aura_color',
         db.raw('(SELECT COUNT(*) FROM likes WHERE post_id = posts.id) as likes_count'),
         db.raw(`EXISTS(SELECT 1 FROM likes WHERE post_id = posts.id AND user_id = ?) as user_liked`, [currentUserId])
       );
@@ -264,31 +268,6 @@ app.get('/posts', async (req, res) => {
     const posts = await query.orderBy('posts.created_at', 'desc');
     res.json(posts);
   } catch (err) { res.status(500).json({ error: "Erro ao buscar posts" }); }
-});
-
-// --- ECONOMIA ---
-app.post('/update-balance', async (req, res) => {
-  const { userId, amount, giftName, type } = req.body;
-  try {
-    await db.transaction(async (trx) => {
-      const [updatedUser] = await trx('users').where({ id: userId })[type === 'gain' ? 'increment' : 'decrement']('balance', Math.abs(amount)).returning('*');
-      await trx('transactions').insert({
-        user_id: userId, value: type === 'gain' ? Math.abs(amount) : -Math.abs(amount),
-        gift_name: giftName || 'Ajuste de Energia'
-      });
-      res.json({ success: true, balance: updatedUser.balance });
-    });
-  } catch (err) { res.status(500).json({ error: "Erro na economia" }); }
-});
-
-// --- XP ---
-app.post('/users/:id/update-xp', async (req, res) => {
-  const { id } = req.params;
-  const { xpToAdd } = req.body;
-  try {
-    const [updatedUser] = await db('users').where({ id }).increment('xp', xpToAdd).returning(['id', 'username', 'xp']);
-    res.json({ success: true, xp: updatedUser.xp });
-  } catch (err) { res.status(500).json({ error: "Erro ao salvar progresso." }); }
 });
 
 // --- LIKES ---
@@ -337,15 +316,7 @@ app.post('/shop/buy', async (req, res) => {
         await trx('users').where({ id: userId }).update({ aura_color: item.item_value });
       }
 
-      if (item.category === 'boost') {
-        await trx('users').where({ id: userId }).increment('xp', parseInt(item.item_value));
-      }
-
-      res.json({ 
-        success: true, 
-        message: `Você adquiriu ${item.name}!`,
-        newBalance: updatedUser.balance
-      });
+      res.json({ success: true, message: `Você adquiriu ${item.name}!`, newBalance: updatedUser.balance });
     });
   } catch (err) { res.status(400).json({ error: err.message }); }
 });
