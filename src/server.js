@@ -19,7 +19,7 @@ const io = new Server(server, {
 const PORT = process.env.PORT || 3333; 
 const JWT_SECRET = process.env.JWT_SECRET || 'minha_chave_galatica_secreta';
 
-// --- CONFIGURAÇÃO CLOUDINARY (USANDO VARIÁVEIS DE AMBIENTE) ---
+// --- CONFIGURAÇÃO CLOUDINARY ---
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
@@ -30,14 +30,14 @@ const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
   params: {
     folder: 'aura_media',
-    resource_type: 'auto',
+    resource_type: 'auto', // Permite vídeos e imagens
     allowed_formats: ['jpg', 'png', 'mp4', 'mov', 'jpeg']
   },
 });
 
 const upload = multer({ 
   storage: storage,
-  limits: { fileSize: 100 * 1024 * 1024 } 
+  limits: { fileSize: 100 * 1024 * 1024 } // 100MB
 });
 
 const uploadFields = upload.fields([
@@ -55,7 +55,10 @@ io.on('connection', (socket) => {
   socket.on('join_room', async (roomName) => {
     socket.join(roomName);
     try {
-      const messages = await db('messages').where({ room: roomName }).orderBy('created_at', 'asc').limit(50);
+      const messages = await db('messages')
+        .where({ room: String(roomName) })
+        .orderBy('created_at', 'asc')
+        .limit(50);
       socket.emit('previous_messages', messages);
     } catch (err) { console.log("Erro chat:", err.message); }
   });
@@ -68,7 +71,7 @@ io.on('connection', (socket) => {
         user: String(data.user),
         text: String(data.text),
         aura_color: userRecord?.aura_color || '#ffffff',
-        aura_name: userRecord?.xp >= 1000 ? 'Mestre' : 'Iniciante',
+        aura_name: (userRecord?.xp >= 1000) ? 'Mestre' : 'Iniciante',
         role: userRecord?.role || 'user',
         created_at: new Date()
       }).returning('*');
@@ -87,7 +90,9 @@ app.post('/register', async (req, res) => {
       balance: 1000, role: 'user', xp: 0, aura_color: '#ffffff'
     }).returning('*');
     res.status(201).json({ message: "Usuário criado!", user: newUser });
-  } catch (err) { res.status(400).json({ error: "Erro ao registrar. Email ou User já existe." }); }
+  } catch (err) { 
+    res.status(400).json({ error: "Email ou Usuário já cadastrado." }); 
+  }
 });
 
 app.post('/login', async (req, res) => {
@@ -99,52 +104,35 @@ app.post('/login', async (req, res) => {
     }
     const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '7d' });
     res.json({ token, user });
-  } catch (err) { res.status(500).json({ error: "Erro interno" }); }
+  } catch (err) { 
+    res.status(500).json({ error: "Erro interno no servidor." }); 
+  }
 });
 
-// --- PERFIL E FOLLOWS ---
+// --- PERFIL ---
 app.put('/users/:id', uploadFields, async (req, res) => {
   const { id } = req.params;
   try {
     const { username, bio } = req.body;
-    const dataToUpdate = { username, bio };
+    const dataToUpdate = {};
+    if (username) dataToUpdate.username = username;
+    if (bio !== undefined) dataToUpdate.bio = bio;
 
-    // Verifica se o arquivo realmente subiu para o Cloudinary
-    if (req.files && req.files['avatar'] && req.files['avatar'][0]) {
+    if (req.files && req.files['avatar']) {
       dataToUpdate.avatar_url = req.files['avatar'][0].path;
     }
 
-    // Tenta atualizar e força o retorno de um objeto limpo
-    const updatedUsers = await db('users')
+    const [updatedUser] = await db('users')
       .where({ id: Number(id) })
       .update(dataToUpdate)
       .returning('*');
 
-    if (!updatedUsers || updatedUsers.length === 0) {
-      return res.status(404).json({ error: "Usuário não encontrado no banco." });
-    }
+    if (!updatedUser) return res.status(404).json({ error: "Usuário não encontrado." });
 
-    // Retornamos exatamente o primeiro item do array
-    res.json({ message: "Sucesso!", user: updatedUsers[0] });
-
+    res.json({ message: "Perfil atualizado!", user: updatedUser });
   } catch (err) {
-    console.error("🔥 ERRO NO RENDER:", err.message);
-    res.status(500).json({ error: "Erro interno", details: err.message });
+    res.status(500).json({ error: "Erro ao atualizar perfil.", details: err.message });
   }
-});
-
-app.post('/users/:id/follow', async (req, res) => {
-  try {
-    const targetId = Number(req.params.id);
-    const { followerId } = req.body;
-    const existing = await db('follows').where({ follower_id: followerId, following_id: targetId }).first();
-    if (existing) {
-      await db('follows').where({ follower_id: followerId, following_id: targetId }).del();
-      return res.json({ isFollowing: false });
-    }
-    await db('follows').insert({ follower_id: followerId, following_id: targetId });
-    res.json({ isFollowing: true });
-  } catch (err) { res.status(500).json({ error: "Erro follow" }); }
 });
 
 app.get('/users/:id/profile', async (req, res) => {
@@ -152,34 +140,35 @@ app.get('/users/:id/profile', async (req, res) => {
     const targetId = Number(req.params.id);
     const currentUserId = Number(req.query.currentUserId);
     const user = await db('users').where({ id: targetId }).first();
-    if(!user) return res.status(404).json({error: "Não encontrado"});
+    if(!user) return res.status(404).json({error: "Viajante não encontrado"});
+
     const followers = await db('follows').where({ following_id: targetId }).count('id as count').first();
     const following = await db('follows').where({ follower_id: targetId }).count('id as count').first();
+    
     let isFollowing = false;
     if (currentUserId) {
       const check = await db('follows').where({ follower_id: currentUserId, following_id: targetId }).first();
       isFollowing = !!check;
     }
-    res.json({ ...user, followers: parseInt(followers.count || 0), following: parseInt(following.count || 0), isFollowing });
-  } catch (err) { res.status(500).json({ error: "Erro perfil" }); }
+    res.json({ 
+      ...user, 
+      followers: parseInt(followers.count || 0), 
+      following: parseInt(following.count || 0), 
+      isFollowing 
+    });
+  } catch (err) { res.status(500).json({ error: "Erro ao buscar perfil." }); }
 });
 
 // --- POSTS ---
 app.post('/posts/upload', uploadFields, async (req, res) => {
   try {
-    console.log("🎬 Iniciando processamento de vídeo...");
     const { userId, title, description } = req.body;
-
-    // Log para conferir se os arquivos chegaram ao servidor
     if (!req.files || !req.files['video']) {
-      console.log("❌ Arquivo de vídeo não encontrado no request.");
-      return res.status(400).json({ error: "Vídeo obrigatório." });
+      return res.status(400).json({ error: "O vídeo é obrigatório para a jornada." });
     }
 
     const videoUrl = req.files['video'][0].path;
     const thumbUrl = req.files['thumbnail'] ? req.files['thumbnail'][0].path : null;
-
-    console.log("✅ Vídeo armazenado no Cloudinary:", videoUrl);
 
     const [newPost] = await db('posts').insert({
       user_id: Number(userId),
@@ -192,40 +181,37 @@ app.post('/posts/upload', uploadFields, async (req, res) => {
 
     res.status(201).json(newPost);
   } catch (err) {
-    console.error("🔥 ERRO NO UPLOAD DE VÍDEO:", err.message);
-    res.status(500).json({ 
-      error: "Erro no upload do vídeo.", 
-      details: err.message 
-    });
+    res.status(500).json({ error: "Falha no upload estelar.", details: err.message });
   }
 });
 
-app.post('/posts', uploadFields, async (req, res) => {
+app.get('/posts', async (req, res) => {
   try {
-    const { userId, title } = req.body;
+    const { userId, userIdVisitado } = req.query; 
+    const currentUserId = (userId && userId !== 'undefined') ? Number(userId) : 0;
+    
+    let query = db('posts')
+      .join('users', 'posts.user_id', 'users.id')
+      .select(
+        'posts.*', 
+        'users.username', 
+        'users.avatar_url', 
+        'users.aura_color',
+        db.raw('(SELECT COUNT(*) FROM likes WHERE post_id = posts.id) as likes_count'),
+        db.raw(`EXISTS(SELECT 1 FROM likes WHERE post_id = posts.id AND user_id = ?) as user_liked`, [currentUserId])
+      );
 
-    // Verifique se o arquivo chegou
-    if (!req.files || !req.files['video']) {
-      return res.status(400).json({ error: "Vídeo não recebido." });
+    if (userIdVisitado) {
+      query = query.where('posts.user_id', Number(userIdVisitado));
     }
 
-    // O Multer-Cloudinary coloca o link em .path
-    const videoUrl = req.files['video'][0].path; 
-
-    console.log("🚀 URL gerada pelo Cloudinary:", videoUrl);
-
-    const [newPost] = await db('posts').insert({
-      user_id: Number(userId),
-      title: title,
-      media_url: videoUrl, // Aqui deve salvar o link do Cloudinary (https://res.cloudinary...)
-    }).returning('*');
-
-    res.status(201).json(newPost);
-  } catch (err) {
-    console.error("🔥 Erro no Servidor:", err.message);
-    res.status(500).send(`Erro interno: ${err.message}`); 
+    const posts = await query.orderBy('posts.created_at', 'desc');
+    res.json(posts);
+  } catch (err) { 
+    res.status(500).json({ error: "Erro ao buscar posts." }); 
   }
 });
+
 // --- LIKES E COMENTÁRIOS ---
 app.post('/posts/:id/like', async (req, res) => {
   try {
@@ -237,30 +223,39 @@ app.post('/posts/:id/like', async (req, res) => {
     }
     await db('likes').insert({ user_id: userId, post_id: req.params.id });
     res.json({ liked: true });
-  } catch (err) { res.status(500).json({ error: "Erro likes" }); }
+  } catch (err) { res.status(500).json({ error: "Erro ao processar like." }); }
 });
 
 app.post('/posts/:id/comments', async (req, res) => {
   try {
     const { user_id, content } = req.body;
     const [newComment] = await db('comments').insert({ post_id: req.params.id, user_id, content }).returning('*');
-    const full = await db('comments').join('users', 'comments.user_id', 'users.id')
-      .where('comments.id', newComment.id).select('comments.*', 'users.username', 'users.avatar_url', 'users.aura_color').first();
+    const full = await db('comments')
+      .join('users', 'comments.user_id', 'users.id')
+      .where('comments.id', newComment.id)
+      .select('comments.*', 'users.username', 'users.avatar_url', 'users.aura_color')
+      .first();
     res.status(201).json(full);
-  } catch (err) { res.status(500).json({ error: "Erro comment" }); }
+  } catch (err) { res.status(500).json({ error: "Erro ao comentar." }); }
 });
 
 app.get('/posts/:id/comments', async (req, res) => {
   try {
-    const comments = await db('comments').join('users', 'comments.user_id', 'users.id')
-      .where({ post_id: req.params.id }).select('comments.*', 'users.username', 'users.avatar_url', 'users.aura_color').orderBy('created_at', 'asc');
+    const comments = await db('comments')
+      .join('users', 'comments.user_id', 'users.id')
+      .where({ post_id: req.params.id })
+      .select('comments.*', 'users.username', 'users.avatar_url', 'users.aura_color')
+      .orderBy('created_at', 'asc');
     res.json(comments);
-  } catch (err) { res.status(500).json({ error: "Erro buscando comments" }); }
+  } catch (err) { res.status(500).json({ error: "Erro ao carregar comentários." }); }
 });
 
 // --- SHOP ---
 app.get('/shop', async (req, res) => {
-  try { res.json(await db('shop_items').select('*')); } catch (err) { res.status(500).json({ error: "Erro shop" }); }
+  try { 
+    const items = await db('shop_items').select('*');
+    res.json(items); 
+  } catch (err) { res.status(500).json({ error: "Erro ao carregar loja." }); }
 });
 
 app.post('/shop/buy', async (req, res) => {
@@ -271,14 +266,20 @@ app.post('/shop/buy', async (req, res) => {
       const user = await trx('users').where({ id: userId }).first();
       if (!user || !item) throw new Error("Item ou usuário não encontrado");
       if (user.balance < item.price) throw new Error("Saldo insuficiente!");
+      
       const [upd] = await trx('users').where({ id: userId }).decrement('balance', item.price).returning('*');
       await trx('user_inventory').insert({ user_id: userId, item_id: itemId });
-      if (item.category === 'aura') await trx('users').where({ id: userId }).update({ aura_color: item.item_value });
+      
+      if (item.category === 'aura') {
+        await trx('users').where({ id: userId }).update({ aura_color: item.item_value });
+      }
       res.json({ success: true, newBalance: upd.balance });
     });
   } catch (err) { res.status(400).json({ error: err.message }); }
 });
 
-// Upgrade Cloudinary.
-app.get('/', (req, res) => res.send('🌌 Aura Santuário Online!'));
+// Rota padrão para evitar erro de HTML no Render
+app.get('/', (req, res) => res.json({ status: "online", message: "🌌 Aura Santuário Online!" }));
+
+// Manter servidor rodando
 server.listen(PORT, '0.0.0.0', () => console.log(`🚀 Porta ${PORT}`));
