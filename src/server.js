@@ -24,14 +24,14 @@ app.use(cors());
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '100mb', extended: true }));
 
-// --- CONFIGURAÇÃO DO MULTER ---
-const uploadDir = './uploads';
+// --- CONFIGURAÇÃO DO MULTER (AJUSTADO PARA RENDER) ---
+const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)){
-    fs.mkdirSync(uploadDir);
+    fs.mkdirSync(uploadDir, { recursive: true });
 }
 
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, 'uploads/'),
+  destination: (req, file, cb) => cb(null, uploadDir),
   filename: (req, file, cb) => cb(null, Date.now() + path.extname(file.originalname))
 });
 
@@ -46,7 +46,7 @@ const uploadFields = upload.fields([
   { name: 'avatar', maxCount: 1 }
 ]);
 
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/uploads', express.static(uploadDir));
 
 // --- LÓGICA DO CHAT (SOCKET.IO) ---
 io.on('connection', (socket) => {
@@ -198,8 +198,9 @@ app.get('/users/:id/profile', async (req, res) => {
 app.put('/users/:id', uploadFields, async (req, res) => {
   const { id } = req.params;
   const { username, bio } = req.body;
-  // Lógica de URL Dinâmica:
-  const protocol = req.protocol;
+  
+  // Lógica de URL Dinâmica robusta:
+  const protocol = req.headers['x-forwarded-proto'] || req.protocol;
   const host = req.get('host');
   const baseUrl = `${protocol}://${host}`;
 
@@ -224,23 +225,30 @@ app.get('/transactions/:userId', async (req, res) => {
 // --- POSTS ---
 app.post('/posts/upload', uploadFields, async (req, res) => {
   const { userId, title, description } = req.body;
-  const protocol = req.protocol;
+  const protocol = req.headers['x-forwarded-proto'] || req.protocol;
   const host = req.get('host');
   const baseUrl = `${protocol}://${host}`;
 
   try {
     const videoFile = req.files['video'] ? req.files['video'][0] : null;
     const thumbFile = req.files['thumbnail'] ? req.files['thumbnail'][0] : null;
+    
     if (!videoFile) return res.status(400).json({ error: "O vídeo é obrigatório." });
 
     const [newPost] = await db('posts').insert({
-      user_id: userId, title: title || 'Nova Essência', description: description || '',
+      user_id: userId, 
+      title: title || 'Nova Essência', 
+      description: description || '',
       media_url: `${baseUrl}/uploads/${videoFile.filename}`,
       thumbnail_url: thumbFile ? `${baseUrl}/uploads/${thumbFile.filename}` : null,
       type: 'video'
     }).returning('*');
+    
     res.status(201).json(newPost);
-  } catch (err) { res.status(500).json({ error: "Falha ao publicar" }); }
+  } catch (err) { 
+    console.error("ERRO NO UPLOAD:", err); // Log para você ver no Render
+    res.status(500).json({ error: "Falha ao publicar" }); 
+  }
 });
 
 app.get('/posts', async (req, res) => {
