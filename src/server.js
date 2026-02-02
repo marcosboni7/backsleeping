@@ -234,6 +234,6 @@ app.post('/shop/buy', async (req, res) => {
   } catch (err) { res.status(400).json({ error: err.message }); }
 });
 
-// --- INICIALIZAÇÃO ---
+// Upgrade Cloudinary.
 app.get('/', (req, res) => res.send('🌌 Aura Santuário Online!'));
 server.listen(PORT, '0.0.0.0', () => console.log(`🚀 Porta ${PORT}`));
