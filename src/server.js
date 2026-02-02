@@ -25,7 +25,7 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-// Otimizado: Removemos transformações pesadas para evitar timeout no Render
+// Storage Otimizado: Focado em estabilidade para o plano grátis do Render
 const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
   params: {
@@ -37,7 +37,7 @@ const storage = new CloudinaryStorage({
 
 const upload = multer({ 
   storage: storage,
-  limits: { fileSize: 30 * 1024 * 1024 } // Limite de 30MB para estabilidade
+  limits: { fileSize: 30 * 1024 * 1024 } // Limite de 30MB para evitar estouro de RAM
 });
 
 const uploadFields = upload.fields([
@@ -80,7 +80,7 @@ io.on('connection', (socket) => {
   });
 });
 
-// --- AUTH ---
+// --- AUTENTICAÇÃO ---
 app.post('/register', async (req, res) => {
   try {
     const { username, email, password } = req.body;
@@ -158,7 +158,7 @@ app.get('/users/:id/profile', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Erro ao buscar perfil." }); }
 });
 
-// --- POSTS ---
+// --- POSTS E UPLOAD (CORRIGIDO) ---
 app.post('/posts/upload', uploadFields, async (req, res) => {
   try {
     const { userId, title, description } = req.body;
@@ -182,8 +182,8 @@ app.post('/posts/upload', uploadFields, async (req, res) => {
 
     res.status(201).json(newPost);
   } catch (err) {
-    // Melhorado para capturar erro real no Render
-    console.error("🔥 ERRO REAL NO UPLOAD:", err); 
+    // Agora o log mostrará o erro real detalhado no console do Render
+    console.error("🔥 ERRO REAL NO UPLOAD:", JSON.stringify(err, null, 2)); 
     res.status(500).json({ error: "Erro no servidor", details: err.message });
   }
 });
@@ -283,4 +283,4 @@ app.post('/shop/buy', async (req, res) => {
 
 app.get('/', (req, res) => res.json({ status: "online", message: "🌌 Aura Santuário Online!" }));
 
-server.listen(PORT, '0.0.0.0', () => console.log(`🚀 Servidor na porta ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`🚀 Servidor rodando na porta ${PORT}`));
