@@ -25,23 +25,21 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
+// Otimizado: Removemos transformações pesadas para evitar timeout no Render
 const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
   params: {
     folder: 'aura_media',
-    resource_type: 'auto', // Essencial para aceitar vídeos
+    resource_type: 'auto', 
     allowed_formats: ['jpg', 'png', 'mp4', 'mov', 'jpeg'],
-    // Força a conversão para mp4 para evitar problemas de reprodução no Android/iOS
-    transformation: [{ fetch_format: "mp4", video_codec: "h264" }]
   },
 });
 
 const upload = multer({ 
   storage: storage,
-  limits: { fileSize: 100 * 1024 * 1024 } // Limite de 100MB
+  limits: { fileSize: 30 * 1024 * 1024 } // Limite de 30MB para estabilidade
 });
 
-// Campos permitidos para upload
 const uploadFields = upload.fields([
   { name: 'video', maxCount: 1 },
   { name: 'thumbnail', maxCount: 1 },
@@ -49,8 +47,8 @@ const uploadFields = upload.fields([
 ]);
 
 app.use(cors());
-app.use(express.json({ limit: '100mb' }));
-app.use(express.urlencoded({ limit: '100mb', extended: true }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // --- CHAT (SOCKET.IO) ---
 io.on('connection', (socket) => {
@@ -160,20 +158,17 @@ app.get('/users/:id/profile', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Erro ao buscar perfil." }); }
 });
 
-// --- POSTS (UPLOAD CORRIGIDO) ---
+// --- POSTS ---
 app.post('/posts/upload', uploadFields, async (req, res) => {
   try {
     const { userId, title, description } = req.body;
     
     if (!req.files || !req.files['video']) {
-      console.log("❌ Tentativa de upload sem arquivo de vídeo.");
-      return res.status(400).json({ error: "O vídeo é obrigatório para a jornada." });
+      return res.status(400).json({ error: "Vídeo ausente." });
     }
 
     const videoUrl = req.files['video'][0].path;
     const thumbUrl = req.files['thumbnail'] ? req.files['thumbnail'][0].path : null;
-
-    console.log(`✅ Upload recebido: User ${userId} - Titulo: ${title}`);
 
     const [newPost] = await db('posts').insert({
       user_id: Number(userId),
@@ -187,8 +182,9 @@ app.post('/posts/upload', uploadFields, async (req, res) => {
 
     res.status(201).json(newPost);
   } catch (err) {
-    console.error("🔥 Erro no Cloudinary/DB:", err.message);
-    res.status(500).json({ error: "Falha no upload estelar.", details: err.message });
+    // Melhorado para capturar erro real no Render
+    console.error("🔥 ERRO REAL NO UPLOAD:", err); 
+    res.status(500).json({ error: "Erro no servidor", details: err.message });
   }
 });
 
@@ -285,7 +281,6 @@ app.post('/shop/buy', async (req, res) => {
   } catch (err) { res.status(400).json({ error: err.message }); }
 });
 
-// Rota padrão
 app.get('/', (req, res) => res.json({ status: "online", message: "🌌 Aura Santuário Online!" }));
 
-server.listen(PORT, '0.0.0.0', () => console.log(`🚀 Porta ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`🚀 Servidor na porta ${PORT}`));
