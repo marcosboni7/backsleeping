@@ -157,54 +157,40 @@ app.post('/login', async (req, res) => {
 app.post('/posts/:id/comments', async (req, res) => {
   const post_id = req.params.id;
   const { user_id, content } = req.body;
-  try {
-    const [newComment] = await db('comments').insert({
-      post_id,
-      user_id,
-      content
-    }).returning('*');
-    
-    const commentWithUser = await db('comments')
-      .join('users', 'comments.user_id', 'users.id')
-      .where('comments.id', newComment.id)
-      .select('comments.*', 'users.username', 'users.avatar_url', 'users.aura_color')
-      .first();
-
-    res.status(201).json(commentWithUser);
-  } catch (err) {
-    res.status(500).json({ error: "Erro ao comentar" });
-  }
-});
-
-app.post('/posts/:id/comments', async (req, res) => {
-  const post_id = req.params.id;
-  const { user_id, content } = req.body;
-
-  console.log(`💬 Tentativa de comentário no post ${post_id} pelo user ${user_id}`);
-
-  if (!content || !user_id) {
-    return res.status(400).json({ error: "Conteúdo ou ID do usuário faltando" });
-  }
 
   try {
+    // 1. Insere o comentário
     const [newComment] = await db('comments').insert({
       post_id: Number(post_id),
       user_id: Number(user_id),
       content: content
     }).returning('*');
     
-    // Busca os dados do autor para o front exibir na hora
+    // 2. Busca os dados do autor para o App exibir o comentário na hora
     const commentWithUser = await db('comments')
       .join('users', 'comments.user_id', 'users.id')
       .where('comments.id', newComment.id)
       .select('comments.*', 'users.username', 'users.avatar_url', 'users.aura_color')
       .first();
 
-    console.log("✅ Comentário salvo com sucesso!");
-    res.status(201).json(commentWithUser); // O Front precisa desse JSON para limpar o campo de texto
+    // 3. Retorna JSON (Isso evita o erro de "Unexpected character <")
+    res.status(201).json(commentWithUser);
   } catch (err) {
-    console.error("❌ Erro ao comentar:", err.message);
-    res.status(500).json({ error: "Erro interno ao salvar comentário" });
+    console.error("Erro ao comentar:", err);
+    res.status(500).json({ error: "Erro ao salvar comentário" });
+  }
+});
+
+app.get('/posts/:id/comments', async (req, res) => {
+  try {
+    const comments = await db('comments')
+      .join('users', 'comments.user_id', 'users.id')
+      .where({ post_id: Number(req.params.id) })
+      .select('comments.*', 'users.username', 'users.avatar_url', 'users.aura_color')
+      .orderBy('created_at', 'asc');
+    res.json(comments);
+  } catch (err) {
+    res.status(500).json({ error: "Erro ao buscar comentários" });
   }
 });
 
