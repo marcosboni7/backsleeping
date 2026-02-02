@@ -200,21 +200,32 @@ app.post('/posts/upload', uploadFields, async (req, res) => {
   }
 });
 
-app.get('/posts', async (req, res) => {
+app.post('/posts', uploadFields, async (req, res) => {
   try {
-    const { userId, userIdVisitado } = req.query; 
-    const currentUserId = (userId && userId !== 'undefined') ? Number(userId) : 0;
-    let query = db('posts').join('users', 'posts.user_id', 'users.id')
-      .select('posts.*', 'users.username', 'users.avatar_url', 'users.aura_color',
-        db.raw('(SELECT COUNT(*) FROM likes WHERE post_id = posts.id) as likes_count'),
-        db.raw(`EXISTS(SELECT 1 FROM likes WHERE post_id = posts.id AND user_id = ?) as user_liked`, [currentUserId])
-      );
-    if (userIdVisitado) query = query.where('posts.user_id', Number(userIdVisitado));
-    const posts = await query.orderBy('posts.created_at', 'desc');
-    res.json(posts);
-  } catch (err) { res.status(500).json({ error: "Erro posts" }); }
-});
+    const { userId, title } = req.body;
 
+    // Verifique se o arquivo chegou
+    if (!req.files || !req.files['video']) {
+      return res.status(400).json({ error: "Vídeo não recebido." });
+    }
+
+    // O Multer-Cloudinary coloca o link em .path
+    const videoUrl = req.files['video'][0].path; 
+
+    console.log("🚀 URL gerada pelo Cloudinary:", videoUrl);
+
+    const [newPost] = await db('posts').insert({
+      user_id: Number(userId),
+      title: title,
+      media_url: videoUrl, // Aqui deve salvar o link do Cloudinary (https://res.cloudinary...)
+    }).returning('*');
+
+    res.status(201).json(newPost);
+  } catch (err) {
+    console.error("🔥 Erro no Servidor:", err.message);
+    res.status(500).send(`Erro interno: ${err.message}`); 
+  }
+});
 // --- LIKES E COMENTÁRIOS ---
 app.post('/posts/:id/like', async (req, res) => {
   try {
