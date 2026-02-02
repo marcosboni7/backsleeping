@@ -105,36 +105,31 @@ app.post('/login', async (req, res) => {
 // --- PERFIL E FOLLOWS ---
 app.put('/users/:id', uploadFields, async (req, res) => {
   const { id } = req.params;
-  console.log("📡 Tentando atualizar usuário ID:", id);
-
   try {
     const { username, bio } = req.body;
     const dataToUpdate = { username, bio };
 
-    // Verifica se o arquivo chegou e foi pro Cloudinary
+    // Verifica se o arquivo realmente subiu para o Cloudinary
     if (req.files && req.files['avatar'] && req.files['avatar'][0]) {
-      console.log("✅ Imagem recebida do Cloudinary:", req.files['avatar'][0].path);
       dataToUpdate.avatar_url = req.files['avatar'][0].path;
-    } else {
-      console.log("ℹ️ Nenhuma imagem nova para upload.");
     }
 
-    const [updatedUser] = await db('users')
+    // Tenta atualizar e força o retorno de um objeto limpo
+    const updatedUsers = await db('users')
       .where({ id: Number(id) })
       .update(dataToUpdate)
       .returning('*');
 
-    if (!updatedUser) {
-      console.log("❌ Usuário não encontrado no banco.");
-      return res.status(404).json({ error: "Usuário não encontrado." });
+    if (!updatedUsers || updatedUsers.length === 0) {
+      return res.status(404).json({ error: "Usuário não encontrado no banco." });
     }
 
-    console.log("✨ Update concluído com sucesso!");
-    res.json({ message: "Atualizado!", user: updatedUser });
+    // Retornamos exatamente o primeiro item do array
+    res.json({ message: "Sucesso!", user: updatedUsers[0] });
 
   } catch (err) {
-    console.error("🔥 ERRO NO BACK-END:", err); // Esse log vai aparecer no painel do Render
-    res.status(500).json({ error: "Erro interno no servidor", details: err.message });
+    console.error("🔥 ERRO NO RENDER:", err.message);
+    res.status(500).json({ error: "Erro interno", details: err.message });
   }
 });
 
@@ -172,17 +167,37 @@ app.get('/users/:id/profile', async (req, res) => {
 // --- POSTS ---
 app.post('/posts/upload', uploadFields, async (req, res) => {
   try {
+    console.log("🎬 Iniciando processamento de vídeo...");
     const { userId, title, description } = req.body;
-    const videoUrl = req.files['video'] ? req.files['video'][0].path : null;
+
+    // Log para conferir se os arquivos chegaram ao servidor
+    if (!req.files || !req.files['video']) {
+      console.log("❌ Arquivo de vídeo não encontrado no request.");
+      return res.status(400).json({ error: "Vídeo obrigatório." });
+    }
+
+    const videoUrl = req.files['video'][0].path;
     const thumbUrl = req.files['thumbnail'] ? req.files['thumbnail'][0].path : null;
-    if (!videoUrl) return res.status(400).json({ error: "Vídeo obrigatório." });
+
+    console.log("✅ Vídeo armazenado no Cloudinary:", videoUrl);
 
     const [newPost] = await db('posts').insert({
-      user_id: Number(userId), title, description,
-      media_url: videoUrl, thumbnail_url: thumbUrl, type: 'video'
+      user_id: Number(userId),
+      title,
+      description,
+      media_url: videoUrl,
+      thumbnail_url: thumbUrl,
+      type: 'video'
     }).returning('*');
+
     res.status(201).json(newPost);
-  } catch (err) { res.status(500).json({ error: "Erro upload" }); }
+  } catch (err) {
+    console.error("🔥 ERRO NO UPLOAD DE VÍDEO:", err.message);
+    res.status(500).json({ 
+      error: "Erro no upload do vídeo.", 
+      details: err.message 
+    });
+  }
 });
 
 app.get('/posts', async (req, res) => {
