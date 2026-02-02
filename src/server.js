@@ -104,18 +104,37 @@ app.post('/login', async (req, res) => {
 
 // --- PERFIL E FOLLOWS ---
 app.put('/users/:id', uploadFields, async (req, res) => {
+  const { id } = req.params;
+  console.log("📡 Tentando atualizar usuário ID:", id);
+
   try {
-    const { id } = req.params;
     const { username, bio } = req.body;
     const dataToUpdate = { username, bio };
-    if (req.files && req.files['avatar']) {
-      dataToUpdate.avatar_url = req.files['avatar'][0].path; 
+
+    // Verifica se o arquivo chegou e foi pro Cloudinary
+    if (req.files && req.files['avatar'] && req.files['avatar'][0]) {
+      console.log("✅ Imagem recebida do Cloudinary:", req.files['avatar'][0].path);
+      dataToUpdate.avatar_url = req.files['avatar'][0].path;
+    } else {
+      console.log("ℹ️ Nenhuma imagem nova para upload.");
     }
-    const [updatedUser] = await db('users').where({ id: Number(id) }).update(dataToUpdate).returning('*');
+
+    const [updatedUser] = await db('users')
+      .where({ id: Number(id) })
+      .update(dataToUpdate)
+      .returning('*');
+
+    if (!updatedUser) {
+      console.log("❌ Usuário não encontrado no banco.");
+      return res.status(404).json({ error: "Usuário não encontrado." });
+    }
+
+    console.log("✨ Update concluído com sucesso!");
     res.json({ message: "Atualizado!", user: updatedUser });
-  } catch (err) { 
-    console.error(err);
-    res.status(500).json({ error: "Erro ao atualizar" }); 
+
+  } catch (err) {
+    console.error("🔥 ERRO NO BACK-END:", err); // Esse log vai aparecer no painel do Render
+    res.status(500).json({ error: "Erro interno no servidor", details: err.message });
   }
 });
 
