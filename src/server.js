@@ -17,16 +17,22 @@ const io = new Server(server, {
 const PORT = process.env.PORT || 3333; 
 const JWT_SECRET = process.env.JWT_SECRET || 'minha_chave_galatica_secreta';
 
-// --- CONFIGURAÇÃO CLOUDINARY ---
+// --- CONFIGURAÇÃO CLOUDINARY COM LIMPEZA DE ESPAÇOS (.trim()) ---
 cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET
+  cloud_name: (process.env.CLOUDINARY_CLOUD_NAME || '').trim(),
+  api_key: (process.env.CLOUDINARY_API_KEY || '').trim(),
+  api_secret: (process.env.CLOUDINARY_API_SECRET || '').trim()
 });
 
-// Usamos memoryStorage para não gravar nada no disco limitado do Render
+// Verificação no console do Render para diagnóstico
+console.log("☁️ Cloudinary Nome:", process.env.CLOUDINARY_CLOUD_NAME ? "Configurado" : "Vazio");
+
+// Usamos memoryStorage para não depender do disco do Render
 const storage = multer.memoryStorage();
-const upload = multer({ storage });
+const upload = multer({ 
+  storage,
+  limits: { fileSize: 50 * 1024 * 1024 } // Limite de 50MB
+});
 
 const uploadFields = upload.fields([
   { name: 'video', maxCount: 1 },
@@ -38,14 +44,13 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-// --- FUNÇÃO DE UPLOAD VIA STREAM (O SEGREDO PARA NÃO DAR ERRO) ---
+// --- FUNÇÃO DE UPLOAD VIA STREAM ---
 const streamUpload = (buffer, folder, resourceType) => {
   return new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
       { 
         folder: folder, 
         resource_type: resourceType,
-        // Forçamos uma compressão leve para o vídeo fluir melhor
         transformation: [{ quality: "auto", fetch_format: "mp4" }] 
       },
       (error, result) => {
@@ -57,7 +62,7 @@ const streamUpload = (buffer, folder, resourceType) => {
   });
 };
 
-// --- ROTA DE UPLOAD REESCRITA ---
+// --- ROTA DE UPLOAD ---
 app.post('/posts/upload', uploadFields, async (req, res) => {
   try {
     const { userId, title, description } = req.body;
@@ -66,16 +71,14 @@ app.post('/posts/upload', uploadFields, async (req, res) => {
       return res.status(400).json({ error: "O vídeo é obrigatório." });
     }
 
-    console.log("📡 Iniciando Stream Estelar para o Cloudinary...");
+    console.log("📡 Iniciando upload para Cloudinary...");
 
-    // 1. Upload do Vídeo (Direto da memória para a nuvem)
     const videoResult = await streamUpload(
       req.files['video'][0].buffer, 
       'aura_posts', 
       'video'
     );
 
-    // 2. Upload da Thumbnail (se existir)
     let thumbUrl = null;
     if (req.files['thumbnail']) {
       const thumbResult = await streamUpload(
@@ -86,7 +89,6 @@ app.post('/posts/upload', uploadFields, async (req, res) => {
       thumbUrl = thumbResult.secure_url;
     }
 
-    // 3. Salvar no Banco de Dados
     const [newPost] = await db('posts').insert({
       user_id: Number(userId),
       title: title || "Sem título",
@@ -97,41 +99,15 @@ app.post('/posts/upload', uploadFields, async (req, res) => {
       created_at: new Date()
     }).returning('*');
 
-    console.log("✨ Jornada registrada com sucesso!");
     res.status(201).json(newPost);
-
   } catch (err) {
-    console.error("🔥 ERRO FATAL:", err.message);
-    res.status(500).json({ error: "Erro no processamento", details: err.message });
+    console.error("🔥 ERRO NO UPLOAD:", err);
+    res.status(500).json({ error: "Falha no servidor", details: err.message });
   }
 });
 
-// --- CHAT (SOCKET.IO) ---
-io.on('connection', (socket) => {
-  socket.on('join_room', async (roomName) => {
-    socket.join(roomName);
-    try {
-      const messages = await db('messages').where({ room: String(roomName) }).orderBy('created_at', 'asc').limit(50);
-      socket.emit('previous_messages', messages);
-    } catch (err) { console.log(err.message); }
-  });
+// --- DEMAIS ROTAS ---
 
-  socket.on('send_message', async (data) => {
-    try {
-      const userRecord = await db('users').where({ username: data.user }).first();
-      const [insertedMsg] = await db('messages').insert({
-        room: String(data.room),
-        user: String(data.user),
-        text: String(data.text),
-        aura_color: userRecord?.aura_color || '#ffffff',
-        created_at: new Date()
-      }).returning('*');
-      io.to(data.room).emit('receive_message', insertedMsg);
-    } catch (err) { console.error(err.message); }
-  });
-});
-
-// --- AUTH (LOGIN/REGISTER) ---
 app.post('/register', async (req, res) => {
   try {
     const { username, email, password } = req.body;
@@ -140,7 +116,7 @@ app.post('/register', async (req, res) => {
       username, email, password: hashedPassword, balance: 1000, role: 'user', xp: 0, aura_color: '#ffffff'
     }).returning('*');
     res.status(201).json(newUser);
-  } catch (err) { res.status(400).json({ error: "Erro ao criar usuário" }); }
+  } catch (err) { res.status(400).json({ error: "Erro no cadastro" }); }
 });
 
 app.post('/login', async (req, res) => {
@@ -153,7 +129,6 @@ app.post('/login', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Erro" }); }
 });
 
-// --- FEED ---
 app.get('/posts', async (req, res) => {
   try {
     const posts = await db('posts')
@@ -161,7 +136,7 @@ app.get('/posts', async (req, res) => {
       .select('posts.*', 'users.username', 'users.avatar_url', 'users.aura_color')
       .orderBy('posts.created_at', 'desc');
     res.json(posts);
-  } catch (err) { res.status(500).json({ error: "Erro ao buscar" }); }
+  } catch (err) { res.status(500).json({ error: "Erro ao buscar posts" }); }
 });
 
 app.get('/', (req, res) => res.json({ status: "online" }));
