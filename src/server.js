@@ -19,11 +19,11 @@ const io = new Server(server, {
 const PORT = process.env.PORT || 3333; 
 const JWT_SECRET = process.env.JWT_SECRET || 'minha_chave_galatica_secreta';
 
-// --- CONFIGURAÇÃO CLOUDINARY ---
+// --- CONFIGURAÇÃO CLOUDINARY (USANDO VARIÁVEIS DE AMBIENTE) ---
 cloudinary.config({
-  cloud_name: 'dq2fscjki',
-  api_key: '745961655688624',
-  api_secret: 'gVxVRpYSaKwzbhqv0_1E56SFcQ0'
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
 const storage = new CloudinaryStorage({
@@ -108,16 +108,21 @@ app.put('/users/:id', uploadFields, async (req, res) => {
     const { id } = req.params;
     const { username, bio } = req.body;
     const dataToUpdate = { username, bio };
-    if (req.files && req.files['avatar']) dataToUpdate.avatar_url = req.files['avatar'][0].path;
+    if (req.files && req.files['avatar']) {
+      dataToUpdate.avatar_url = req.files['avatar'][0].path; 
+    }
     const [updatedUser] = await db('users').where({ id: Number(id) }).update(dataToUpdate).returning('*');
     res.json({ message: "Atualizado!", user: updatedUser });
-  } catch (err) { res.status(500).json({ error: "Erro ao atualizar" }); }
+  } catch (err) { 
+    console.error(err);
+    res.status(500).json({ error: "Erro ao atualizar" }); 
+  }
 });
 
 app.post('/users/:id/follow', async (req, res) => {
-  const targetId = Number(req.params.id);
-  const { followerId } = req.body;
   try {
+    const targetId = Number(req.params.id);
+    const { followerId } = req.body;
     const existing = await db('follows').where({ follower_id: followerId, following_id: targetId }).first();
     if (existing) {
       await db('follows').where({ follower_id: followerId, following_id: targetId }).del();
@@ -141,7 +146,7 @@ app.get('/users/:id/profile', async (req, res) => {
       const check = await db('follows').where({ follower_id: currentUserId, following_id: targetId }).first();
       isFollowing = !!check;
     }
-    res.json({ ...user, followers: parseInt(followers.count), following: parseInt(following.count), isFollowing });
+    res.json({ ...user, followers: parseInt(followers.count || 0), following: parseInt(following.count || 0), isFollowing });
   } catch (err) { res.status(500).json({ error: "Erro perfil" }); }
 });
 
@@ -152,6 +157,7 @@ app.post('/posts/upload', uploadFields, async (req, res) => {
     const videoUrl = req.files['video'] ? req.files['video'][0].path : null;
     const thumbUrl = req.files['thumbnail'] ? req.files['thumbnail'][0].path : null;
     if (!videoUrl) return res.status(400).json({ error: "Vídeo obrigatório." });
+
     const [newPost] = await db('posts').insert({
       user_id: Number(userId), title, description,
       media_url: videoUrl, thumbnail_url: thumbUrl, type: 'video'
@@ -218,6 +224,7 @@ app.post('/shop/buy', async (req, res) => {
     await db.transaction(async (trx) => {
       const item = await trx('shop_items').where({ id: itemId }).first();
       const user = await trx('users').where({ id: userId }).first();
+      if (!user || !item) throw new Error("Item ou usuário não encontrado");
       if (user.balance < item.price) throw new Error("Saldo insuficiente!");
       const [upd] = await trx('users').where({ id: userId }).decrement('balance', item.price).returning('*');
       await trx('user_inventory').insert({ user_id: userId, item_id: itemId });
