@@ -4,7 +4,6 @@ const db = require('./config/db');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const multer = require('multer'); 
-const path = require('path');    
 const http = require('http'); 
 const { Server } = require('socket.io'); 
 const cloudinary = require('cloudinary').v2;
@@ -30,16 +29,19 @@ const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
   params: {
     folder: 'aura_media',
-    resource_type: 'auto', // Permite vídeos e imagens
-    allowed_formats: ['jpg', 'png', 'mp4', 'mov', 'jpeg']
+    resource_type: 'auto', // Essencial para aceitar vídeos
+    allowed_formats: ['jpg', 'png', 'mp4', 'mov', 'jpeg'],
+    // Força a conversão para mp4 para evitar problemas de reprodução no Android/iOS
+    transformation: [{ fetch_format: "mp4", video_codec: "h264" }]
   },
 });
 
 const upload = multer({ 
   storage: storage,
-  limits: { fileSize: 100 * 1024 * 1024 } // 100MB
+  limits: { fileSize: 100 * 1024 * 1024 } // Limite de 100MB
 });
 
+// Campos permitidos para upload
 const uploadFields = upload.fields([
   { name: 'video', maxCount: 1 },
   { name: 'thumbnail', maxCount: 1 },
@@ -128,7 +130,6 @@ app.put('/users/:id', uploadFields, async (req, res) => {
       .returning('*');
 
     if (!updatedUser) return res.status(404).json({ error: "Usuário não encontrado." });
-
     res.json({ message: "Perfil atualizado!", user: updatedUser });
   } catch (err) {
     res.status(500).json({ error: "Erro ao atualizar perfil.", details: err.message });
@@ -159,28 +160,34 @@ app.get('/users/:id/profile', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Erro ao buscar perfil." }); }
 });
 
-// --- POSTS ---
+// --- POSTS (UPLOAD CORRIGIDO) ---
 app.post('/posts/upload', uploadFields, async (req, res) => {
   try {
     const { userId, title, description } = req.body;
+    
     if (!req.files || !req.files['video']) {
+      console.log("❌ Tentativa de upload sem arquivo de vídeo.");
       return res.status(400).json({ error: "O vídeo é obrigatório para a jornada." });
     }
 
     const videoUrl = req.files['video'][0].path;
     const thumbUrl = req.files['thumbnail'] ? req.files['thumbnail'][0].path : null;
 
+    console.log(`✅ Upload recebido: User ${userId} - Titulo: ${title}`);
+
     const [newPost] = await db('posts').insert({
       user_id: Number(userId),
-      title,
-      description,
+      title: title || "Sem título",
+      description: description || "",
       media_url: videoUrl,
       thumbnail_url: thumbUrl,
-      type: 'video'
+      type: 'video',
+      created_at: new Date()
     }).returning('*');
 
     res.status(201).json(newPost);
   } catch (err) {
+    console.error("🔥 Erro no Cloudinary/DB:", err.message);
     res.status(500).json({ error: "Falha no upload estelar.", details: err.message });
   }
 });
@@ -278,8 +285,7 @@ app.post('/shop/buy', async (req, res) => {
   } catch (err) { res.status(400).json({ error: err.message }); }
 });
 
-// Rota padrão para evitar erro de HTML no Render
+// Rota padrão
 app.get('/', (req, res) => res.json({ status: "online", message: "🌌 Aura Santuário Online!" }));
 
-// Manter servidor rodando
 server.listen(PORT, '0.0.0.0', () => console.log(`🚀 Porta ${PORT}`));
