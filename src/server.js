@@ -270,46 +270,53 @@ app.post('/shop/buy', async (req, res) => {
   try {
     const { userId, itemId } = req.body;
 
+    // Usamos uma variável para guardar o novo saldo fora da transação
+    let updatedBalance;
+
     await db.transaction(async (trx) => {
-      // 1. Busca o item e o usuário dentro da transação
       const item = await trx('shop_items').where({ id: itemId }).first();
       const user = await trx('users').where({ id: userId }).first();
 
       if (!item) throw new Error("Item não encontrado!");
       if (!user) throw new Error("Usuário não encontrado!");
 
-      // 2. FORÇAR CONVERSÃO PARA NÚMERO (Resolve o erro do saldo)
       const balanceAtual = Number(user.balance);
       const precoItem = Number(item.price);
-
-      console.log(`Verificando: Saldo ${balanceAtual} | Preço ${precoItem}`);
 
       if (balanceAtual < precoItem) {
         throw new Error("Saldo insuficiente!");
       }
 
-      // 3. Debitar o saldo (usando decrement ou update direto)
-      const [updatedUser] = await trx('users')
+      // 1. Debitar saldo
+      const [upd] = await trx('users')
         .where({ id: userId })
         .update({ balance: balanceAtual - precoItem })
         .returning('*');
 
-      // 4. Registrar no inventário
+      updatedBalance = upd.balance;
+
+      // 2. Adicionar ao inventário
       await trx('user_inventory').insert({ 
         user_id: userId, 
         item_id: itemId 
       });
 
-      // 5. Se for aura, equipa na hora
+      // 3. Se for aura, equipa
       if (item.category === 'aura') {
         await trx('users').where({ id: userId }).update({ aura_color: item.item_value });
       }
-
-      res.json({ success: true, newBalance: updatedUser.balance });
     });
+
+    // RESPOSTA FORA DA TRANSAÇÃO (Mais seguro)
+    return res.status(200).json({ 
+      success: true, 
+      newBalance: updatedBalance 
+    });
+
   } catch (err) {
     console.error("Erro na transação:", err.message);
-    res.status(400).json({ error: err.message });
+    // Se o erro for "já comprou" ou "saldo baixo", retornamos 400
+    return res.status(400).json({ error: err.message });
   }
 });
 app.get('/', (req, res) => res.json({ status: "online", message: "🌌 Aura Santuário!", cloud: "dmzukpnxz" }));
