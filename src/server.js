@@ -244,6 +244,23 @@ app.get('/posts/:id/comments', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Erro nos comentários." }); }
 });
 
+
+
+// --- ROTA PARA BUSCAR O INVENTÁRIO ---
+app.get('/users/:id/inventory', async (req, res) => {
+  try {
+    const items = await db('user_inventory')
+      .join('shop_items', 'user_inventory.item_id', 'shop_items.id')
+      .where('user_inventory.user_id', req.params.id)
+      .select('shop_items.*', 'user_inventory.created_at as purchase_date');
+    res.json(items);
+  } catch (err) {
+    res.status(500).json({ error: "Erro ao buscar inventário" });
+  }
+});
+
+
+
 // --- SHOP ---
 app.get('/shop', async (req, res) => {
   try { res.json(await db('shop_items').select('*')); } catch (err) { res.status(500).json({ error: "Erro loja." }); }
@@ -252,18 +269,49 @@ app.get('/shop', async (req, res) => {
 app.post('/shop/buy', async (req, res) => {
   try {
     const { userId, itemId } = req.body;
+
     await db.transaction(async (trx) => {
+      // 1. Busca o item e o usuário dentro da transação
       const item = await trx('shop_items').where({ id: itemId }).first();
       const user = await trx('users').where({ id: userId }).first();
-      if (user.balance < item.price) throw new Error("Saldo insuficiente!");
-      const [upd] = await trx('users').where({ id: userId }).decrement('balance', item.price).returning('*');
-      await trx('user_inventory').insert({ user_id: userId, item_id: itemId });
-      if (item.category === 'aura') await trx('users').where({ id: userId }).update({ aura_color: item.item_value });
-      res.json({ success: true, newBalance: upd.balance });
-    });
-  } catch (err) { res.status(400).json({ error: err.message }); }
-});
 
+      if (!item) throw new Error("Item não encontrado!");
+      if (!user) throw new Error("Usuário não encontrado!");
+
+      // 2. FORÇAR CONVERSÃO PARA NÚMERO (Resolve o erro do saldo)
+      const balanceAtual = Number(user.balance);
+      const precoItem = Number(item.price);
+
+      console.log(`Verificando: Saldo ${balanceAtual} | Preço ${precoItem}`);
+
+      if (balanceAtual < precoItem) {
+        throw new Error("Saldo insuficiente!");
+      }
+
+      // 3. Debitar o saldo (usando decrement ou update direto)
+      const [updatedUser] = await trx('users')
+        .where({ id: userId })
+        .update({ balance: balanceAtual - precoItem })
+        .returning('*');
+
+      // 4. Registrar no inventário
+      await trx('user_inventory').insert({ 
+        user_id: userId, 
+        item_id: itemId 
+      });
+
+      // 5. Se for aura, equipa na hora
+      if (item.category === 'aura') {
+        await trx('users').where({ id: userId }).update({ aura_color: item.item_value });
+      }
+
+      res.json({ success: true, newBalance: updatedUser.balance });
+    });
+  } catch (err) {
+    console.error("Erro na transação:", err.message);
+    res.status(400).json({ error: err.message });
+  }
+});
 app.get('/', (req, res) => res.json({ status: "online", message: "🌌 Aura Santuário!", cloud: "dmzukpnxz" }));
 
 server.listen(PORT, '0.0.0.0', () => console.log(`🚀 Porta ${PORT}`));
