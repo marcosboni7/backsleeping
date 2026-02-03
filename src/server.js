@@ -17,9 +17,9 @@ const io = new Server(server, {
 const PORT = process.env.PORT || 3333; 
 const JWT_SECRET = process.env.JWT_SECRET || 'minha_chave_galatica_secreta';
 
-// --- CONFIGURAÇÃO CLOUDINARY ---
+// --- CONFIGURAÇÃO CLOUDINARY (USANDO O NOME DA NUVEM CORRETO: dmzukpnxz) ---
 cloudinary.config({
-  cloud_name: (process.env.CLOUDINARY_CLOUD_NAME || '').trim(),
+  cloud_name: (process.env.CLOUDINARY_CLOUD_NAME || 'dmzukpnxz').trim(),
   api_key: (process.env.CLOUDINARY_API_KEY || '').trim(),
   api_secret: (process.env.CLOUDINARY_API_SECRET || '').trim()
 });
@@ -28,7 +28,7 @@ cloudinary.config({
 const storage = multer.memoryStorage();
 const upload = multer({ 
   storage,
-  limits: { fileSize: 50 * 1024 * 1024 } 
+  limits: { fileSize: 50 * 1024 * 1024 } // Limite de 50MB
 });
 
 const uploadFields = upload.fields([
@@ -41,15 +41,24 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-// --- FUNÇÃO AUXILIAR: STREAM UPLOAD ---
+// --- FUNÇÃO AUXILIAR: STREAM UPLOAD (ATUALIZADA PARA VÍDEOS MAIORES) ---
 const streamUpload = (buffer, folder, resourceType) => {
   return new Promise((resolve, reject) => {
+    const options = {
+      folder: folder,
+      resource_type: resourceType,
+    };
+
+    // Ajuste para evitar o erro "Video is too large to process synchronously"
+    if (resourceType === 'video') {
+      options.chunk_size = 6000000; 
+      // Removidas transformações síncronas para garantir o upload imediato
+    } else {
+      options.transformation = [{ quality: "auto" }];
+    }
+
     const stream = cloudinary.uploader.upload_stream(
-      { 
-        folder: folder, 
-        resource_type: resourceType,
-        transformation: resourceType === 'video' ? [{ quality: "auto", fetch_format: "mp4" }] : []
-      },
+      options,
       (error, result) => {
         if (result) resolve(result);
         else reject(error);
@@ -158,7 +167,7 @@ app.post('/posts/upload', uploadFields, async (req, res) => {
     const { userId, title, description } = req.body;
     if (!req.files || !req.files['video']) return res.status(400).json({ error: "Vídeo ausente." });
 
-    console.log("📡 Iniciando Stream Estelar para o Cloudinary...");
+    console.log("📡 Iniciando Stream para Cloudinary (dmzukpnxz)...");
     const videoResult = await streamUpload(req.files['video'][0].buffer, 'aura_posts', 'video');
     
     let thumbUrl = null;
@@ -255,6 +264,6 @@ app.post('/shop/buy', async (req, res) => {
   } catch (err) { res.status(400).json({ error: err.message }); }
 });
 
-app.get('/', (req, res) => res.json({ status: "online", message: "🌌 Aura Santuário!" }));
+app.get('/', (req, res) => res.json({ status: "online", message: "🌌 Aura Santuário!", cloud: "dmzukpnxz" }));
 
 server.listen(PORT, '0.0.0.0', () => console.log(`🚀 Porta ${PORT}`));
