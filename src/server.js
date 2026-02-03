@@ -127,19 +127,43 @@ app.post('/login', async (req, res) => {
 app.put('/users/:id', uploadFields, async (req, res) => {
   const { id } = req.params;
   try {
-    const { username, bio } = req.body;
+    // 1. Pegamos os campos que podem vir do corpo (body)
+    const { username, bio, aura_color } = req.body; 
     const dataToUpdate = {};
+
+    // 2. Só adicionamos ao objeto de update o que realmente foi enviado
     if (username) dataToUpdate.username = username;
     if (bio !== undefined) dataToUpdate.bio = bio;
+    if (aura_color !== undefined) dataToUpdate.aura_color = aura_color; // <-- ISSO AQUI É O QUE FALTA!
 
+    // 3. Lógica do Avatar (se houver arquivo)
     if (req.files && req.files['avatar']) {
       const avatarResult = await streamUpload(req.files['avatar'][0].buffer, 'aura_avatars', 'image');
       dataToUpdate.avatar_url = avatarResult.secure_url;
     }
 
-    const [updatedUser] = await db('users').where({ id: Number(id) }).update(dataToUpdate).returning('*');
+    // 4. Se não houver nada para atualizar, avisamos
+    if (Object.keys(dataToUpdate).length === 0) {
+      return res.status(400).json({ error: "Nenhum dado para atualizar" });
+    }
+
+    // 5. Faz o update no Banco de Dados
+    const [updatedUser] = await db('users')
+      .where({ id: Number(id) })
+      .update(dataToUpdate)
+      .returning('*');
+
+    if (!updatedUser) {
+      return res.status(404).json({ error: "Usuário não encontrado" });
+    }
+
+    // 6. Retorna o usuário atualizado para o App refletir a mudança
     res.json({ message: "Perfil atualizado!", user: updatedUser });
-  } catch (err) { res.status(500).json({ error: "Erro ao atualizar perfil." }); }
+
+  } catch (err) {
+    console.error("Erro no Update Perfil:", err.message);
+    res.status(500).json({ error: "Erro interno ao atualizar perfil." });
+  }
 });
 
 app.get('/users/:id/profile', async (req, res) => {
