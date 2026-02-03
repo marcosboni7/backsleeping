@@ -90,6 +90,7 @@ io.on('connection', (socket) => {
     });
 
     try {
+      // Carrega histórico da sala (seja global ou privada 'private_1_2')
       const messages = await db('messages')
         .where({ room: String(room) })
         .orderBy('created_at', 'asc')
@@ -100,7 +101,7 @@ io.on('connection', (socket) => {
 
   socket.on('send_message', async (data) => {
     try {
-      // AJUSTE AQUI: Busca os dados REAIS do usuário no banco para pegar a foto de perfil
+      // Busca os dados REAIS do usuário no banco para pegar a foto de perfil
       const userRecord = await db('users').where({ username: data.user }).first();
       
       let levelName = data.aura_name || 'Iniciante';
@@ -108,14 +109,17 @@ io.on('connection', (socket) => {
       // Define a foto: prioriza a do banco, senão usa um placeholder
       const userAvatar = userRecord?.avatar_url || 'https://www.pngall.com/wp-content/uploads/5/Profile-Avatar-PNG.png';
 
+      // SALVA A MENSAGEM NO BANCO (Suporta Global e Privada)
       const [insertedMsg] = await db('messages').insert({
         room: String(data.room),
         user: String(data.user),
         text: String(data.text),
         aura_color: userRecord?.aura_color || '#ffffff',
         aura_name: levelName,
-        avatar_url: userAvatar, // SALVA A URL REAL DO CLOUDINARY AQUI
+        avatar_url: userAvatar, 
         role: userRecord?.role || 'user',
+        sender_id: data.sender_id || userRecord?.id, // ID de quem enviou (importante para DM)
+        receiver_id: data.receiver_id || null,       // ID de quem recebe (nulo se for global)
         created_at: new Date()
       }).returning('*');
 
@@ -384,8 +388,8 @@ app.post('/users/equip-aura', async (req, res) => {
 
 // --- ROTA DE SEGUIR (FOLLOW) ---
 app.post('/users/:id/follow', async (req, res) => {
-  const { id } = req.params; // ID de quem vai ser seguido
-  const { followerId } = req.body; // Seu ID (quem está seguindo)
+  const { id } = req.params; 
+  const { followerId } = req.body; 
 
   try {
     const existing = await db('follows')
@@ -398,18 +402,15 @@ app.post('/users/:id/follow', async (req, res) => {
         .del();
       return res.json({ followed: false });
     } else {
-      // 1. Salva no banco de dados
       await db('follows').insert({
         follower_id: followerId,
         following_id: id,
         created_at: new Date()
       });
 
-      // 2. Busca o nome de quem seguiu para enviar na notificação
       const followerUser = await db('users').where({ id: followerId }).first();
 
-      // 3. DISPARO EM TEMPO REAL (Socket.io)
-      // Enviamos para uma "sala" ou "canal" único baseado no ID do usuário seguido
+      // DISPARO DE NOTIFICAÇÃO EM TEMPO REAL
       io.emit(`notification_${id}`, {
         type: 'FOLLOW',
         title: 'Nova Conexão! ✨',
@@ -429,7 +430,6 @@ app.post('/users/:id/follow', async (req, res) => {
 app.get('/users/:id/contacts', async (req, res) => {
   try {
     const { id } = req.params;
-    // Busca os usuários que eu sigo
     const contacts = await db('follows')
       .join('users', 'follows.following_id', 'users.id')
       .where('follows.follower_id', id)
