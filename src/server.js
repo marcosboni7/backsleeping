@@ -17,18 +17,17 @@ const io = new Server(server, {
 const PORT = process.env.PORT || 3333; 
 const JWT_SECRET = process.env.JWT_SECRET || 'minha_chave_galatica_secreta';
 
-// --- CONFIGURAÇÃO CLOUDINARY (USANDO O NOME DA NUVEM CORRETO: dmzukpnxz) ---
+// --- CONFIGURAÇÃO CLOUDINARY ---
 cloudinary.config({
   cloud_name: (process.env.CLOUDINARY_CLOUD_NAME || 'dmzukpnxz').trim(),
   api_key: (process.env.CLOUDINARY_API_KEY || '').trim(),
   api_secret: (process.env.CLOUDINARY_API_SECRET || '').trim()
 });
 
-// Usamos memoryStorage para evitar que o Render trave ao gravar arquivos
 const storage = multer.memoryStorage();
 const upload = multer({ 
   storage,
-  limits: { fileSize: 50 * 1024 * 1024 } // Limite de 50MB
+  limits: { fileSize: 50 * 1024 * 1024 } 
 });
 
 const uploadFields = upload.fields([
@@ -41,7 +40,7 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-// --- FUNÇÃO AUXILIAR: STREAM UPLOAD (ATUALIZADA PARA VÍDEOS MAIORES) ---
+// --- FUNÇÃO AUXILIAR: STREAM UPLOAD ---
 const streamUpload = (buffer, folder, resourceType) => {
   return new Promise((resolve, reject) => {
     const options = {
@@ -49,10 +48,8 @@ const streamUpload = (buffer, folder, resourceType) => {
       resource_type: resourceType,
     };
 
-    // Ajuste para evitar o erro "Video is too large to process synchronously"
     if (resourceType === 'video') {
       options.chunk_size = 6000000; 
-      // Removidas transformações síncronas para garantir o upload imediato
     } else {
       options.transformation = [{ quality: "auto" }];
     }
@@ -83,16 +80,25 @@ io.on('connection', (socket) => {
 
   socket.on('send_message', async (data) => {
     try {
+      // BUSCA ATUALIZADA: Pega os dados mais recentes do usuário no banco
       const userRecord = await db('users').where({ username: data.user }).first();
+      
+      // Lógica de Título baseada em XP
+      let levelName = 'Iniciante';
+      if (userRecord?.xp >= 5000) levelName = 'Mestre Zen';
+      else if (userRecord?.xp >= 1000) levelName = 'Explorador';
+
       const [insertedMsg] = await db('messages').insert({
         room: String(data.room),
         user: String(data.user),
         text: String(data.text),
+        // Usa a cor equipada no banco ou branco por padrão
         aura_color: userRecord?.aura_color || '#ffffff',
-        aura_name: (userRecord?.xp >= 1000) ? 'Mestre' : 'Iniciante',
+        aura_name: levelName,
         role: userRecord?.role || 'user',
         created_at: new Date()
       }).returning('*');
+
       io.to(data.room).emit('receive_message', insertedMsg);
     } catch (err) { console.error("Erro msg:", err.message); }
   });
@@ -127,41 +133,30 @@ app.post('/login', async (req, res) => {
 app.put('/users/:id', uploadFields, async (req, res) => {
   const { id } = req.params;
   try {
-    // 1. Pegamos os campos que podem vir do corpo (body)
     const { username, bio, aura_color } = req.body; 
     const dataToUpdate = {};
 
-    // 2. Só adicionamos ao objeto de update o que realmente foi enviado
     if (username) dataToUpdate.username = username;
     if (bio !== undefined) dataToUpdate.bio = bio;
-    if (aura_color !== undefined) dataToUpdate.aura_color = aura_color; // <-- ISSO AQUI É O QUE FALTA!
+    if (aura_color !== undefined) dataToUpdate.aura_color = aura_color;
 
-    // 3. Lógica do Avatar (se houver arquivo)
     if (req.files && req.files['avatar']) {
       const avatarResult = await streamUpload(req.files['avatar'][0].buffer, 'aura_avatars', 'image');
       dataToUpdate.avatar_url = avatarResult.secure_url;
     }
 
-    // 4. Se não houver nada para atualizar, avisamos
     if (Object.keys(dataToUpdate).length === 0) {
       return res.status(400).json({ error: "Nenhum dado para atualizar" });
     }
 
-    // 5. Faz o update no Banco de Dados
     const [updatedUser] = await db('users')
       .where({ id: Number(id) })
       .update(dataToUpdate)
       .returning('*');
 
-    if (!updatedUser) {
-      return res.status(404).json({ error: "Usuário não encontrado" });
-    }
-
-    // 6. Retorna o usuário atualizado para o App refletir a mudança
+    if (!updatedUser) return res.status(404).json({ error: "Usuário não encontrado" });
     res.json({ message: "Perfil atualizado!", user: updatedUser });
-
   } catch (err) {
-    console.error("Erro no Update Perfil:", err.message);
     res.status(500).json({ error: "Erro interno ao atualizar perfil." });
   }
 });
@@ -185,13 +180,12 @@ app.get('/users/:id/profile', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Erro ao buscar perfil." }); }
 });
 
-// --- POSTS (UPLOAD COM STREAM) ---
+// --- POSTS ---
 app.post('/posts/upload', uploadFields, async (req, res) => {
   try {
     const { userId, title, description } = req.body;
     if (!req.files || !req.files['video']) return res.status(400).json({ error: "Vídeo ausente." });
 
-    console.log("📡 Iniciando Stream para Cloudinary (dmzukpnxz)...");
     const videoResult = await streamUpload(req.files['video'][0].buffer, 'aura_posts', 'video');
     
     let thumbUrl = null;
@@ -211,10 +205,7 @@ app.post('/posts/upload', uploadFields, async (req, res) => {
     }).returning('*');
 
     res.status(201).json(newPost);
-  } catch (err) {
-    console.error("🔥 ERRO NO UPLOAD:", err.message);
-    res.status(500).json({ error: "Falha no servidor", details: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: "Falha no servidor" }); }
 });
 
 app.get('/posts', async (req, res) => {
@@ -268,24 +259,17 @@ app.get('/posts/:id/comments', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Erro nos comentários." }); }
 });
 
-
-
-// --- ROTA PARA BUSCAR O INVENTÁRIO ---
+// --- INVENTÁRIO ---
 app.get('/users/:id/inventory', async (req, res) => {
   try {
     const items = await db('user_inventory')
       .join('shop_items', 'user_inventory.item_id', 'shop_items.id')
       .where('user_inventory.user_id', req.params.id)
-      // Agrupa pelo ID do item para não repetir
       .distinct('shop_items.id', 'shop_items.name', 'shop_items.item_value', 'shop_items.category', 'shop_items.image_url')
       .select();
-    
     res.json(items);
-  } catch (err) {
-    res.status(500).json({ error: "Erro ao buscar inventário" });
-  }
+  } catch (err) { res.status(500).json({ error: "Erro ao buscar inventário" }); }
 });
-
 
 // --- SHOP ---
 app.get('/shop', async (req, res) => {
@@ -295,58 +279,33 @@ app.get('/shop', async (req, res) => {
 app.post('/shop/buy', async (req, res) => {
   try {
     const { userId, itemId } = req.body;
-
     await db.transaction(async (trx) => {
-      // 1. Verificar se o usuário já possui o item
-      const alreadyOwned = await trx('user_inventory')
-        .where({ user_id: userId, item_id: itemId })
-        .first();
-
-      if (alreadyOwned) {
-        throw new Error("Você já possui este item no seu inventário!");
-      }
+      const alreadyOwned = await trx('user_inventory').where({ user_id: userId, item_id: itemId }).first();
+      if (alreadyOwned) throw new Error("Você já possui este item!");
 
       const item = await trx('shop_items').where({ id: itemId }).first();
       const user = await trx('users').where({ id: userId }).first();
 
-      if (!item || !user) throw new Error("Item ou usuário não encontrado.");
+      if (!item || !user) throw new Error("Não encontrado.");
       if (Number(user.balance) < Number(item.price)) throw new Error("Saldo insuficiente!");
 
-      // 2. Debitar e Adicionar
-      await trx('users').where({ id: userId }).update({ 
-        balance: Number(user.balance) - Number(item.price) 
-      });
-
+      await trx('users').where({ id: userId }).update({ balance: Number(user.balance) - Number(item.price) });
       await trx('user_inventory').insert({ user_id: userId, item_id: itemId });
     });
-
     res.status(200).json({ success: true, message: "Compra realizada!" });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
+  } catch (err) { res.status(400).json({ error: err.message }); }
 });
 
-
-// ROTA ULTRA RÁPIDA SÓ PARA EQUIPAR AURA
+// ROTA EQUIPAR
 app.post('/users/equip-aura', async (req, res) => {
   const { userId, color } = req.body;
-
   try {
-    const [updatedUser] = await db('users')
-      .where({ id: Number(userId) })
-      .update({ aura_color: color })
-      .returning('*');
-
-    if (!updatedUser) {
-      return res.status(404).json({ error: "Usuário não encontrado" });
-    }
-
+    const [updatedUser] = await db('users').where({ id: Number(userId) }).update({ aura_color: color }).returning('*');
+    if (!updatedUser) return res.status(404).json({ error: "Não encontrado" });
     return res.status(200).json({ success: true, user: updatedUser });
-  } catch (err) {
-    console.error("Erro ao equipar:", err.message);
-    return res.status(500).json({ error: "Erro ao processar aura" });
-  }
+  } catch (err) { res.status(500).json({ error: "Erro ao processar aura" }); }
 });
-app.get('/', (req, res) => res.json({ status: "online", message: "🌌 Aura Santuário!", cloud: "dmzukpnxz" }));
+
+app.get('/', (req, res) => res.json({ status: "online", message: "🌌 Aura Santuário!" }));
 
 server.listen(PORT, '0.0.0.0', () => console.log(`🚀 Porta ${PORT}`));
