@@ -90,7 +90,6 @@ io.on('connection', (socket) => {
     });
 
     try {
-      // Carrega histórico da sala (seja global ou privada 'private_1_2')
       const messages = await db('messages')
         .where({ room: String(room) })
         .orderBy('created_at', 'asc')
@@ -101,15 +100,10 @@ io.on('connection', (socket) => {
 
   socket.on('send_message', async (data) => {
     try {
-      // Busca os dados REAIS do usuário no banco para pegar a foto de perfil
       const userRecord = await db('users').where({ username: data.user }).first();
-      
       let levelName = data.aura_name || 'Iniciante';
-      
-      // Define a foto: prioriza a do banco, senão usa um placeholder
       const userAvatar = userRecord?.avatar_url || 'https://www.pngall.com/wp-content/uploads/5/Profile-Avatar-PNG.png';
 
-      // SALVA A MENSAGEM NO BANCO (Suporta Global e Privada)
       const [insertedMsg] = await db('messages').insert({
         room: String(data.room),
         user: String(data.user),
@@ -118,8 +112,8 @@ io.on('connection', (socket) => {
         aura_name: levelName,
         avatar_url: userAvatar, 
         role: userRecord?.role || 'user',
-        sender_id: data.sender_id || userRecord?.id, // ID de quem enviou (importante para DM)
-        receiver_id: data.receiver_id || null,       // ID de quem recebe (nulo se for global)
+        sender_id: data.sender_id || userRecord?.id, 
+        receiver_id: data.receiver_id || null, 
         created_at: new Date()
       }).returning('*');
 
@@ -236,15 +230,30 @@ app.get('/users/:id/profile', async (req, res) => {
     const user = await db('users').where({ id: targetId }).first();
     if(!user) return res.status(404).json({error: "Não encontrado"});
 
+    // CHECAR SE O VISITANTE BLOQUEOU ESTE PERFIL
+    let isBlocked = false;
+    if (currentUserId) {
+      const blockCheck = await db('blocks')
+        .where({ blocker_id: currentUserId, blocked_id: targetId })
+        .first();
+      isBlocked = !!blockCheck;
+    }
+
     const followers = await db('follows').where({ following_id: targetId }).count('id as count').first();
     const following = await db('follows').where({ follower_id: targetId }).count('id as count').first();
     
     let isFollowing = false;
-    if (currentUserId) {
+    if (currentUserId && !isBlocked) {
       const check = await db('follows').where({ follower_id: currentUserId, following_id: targetId }).first();
       isFollowing = !!check;
     }
-    res.json({ ...user, followers: parseInt(followers.count || 0), following: parseInt(following.count || 0), isFollowing });
+    res.json({ 
+      ...user, 
+      followers: parseInt(followers.count || 0), 
+      following: parseInt(following.count || 0), 
+      isFollowing,
+      isBlocked 
+    });
   } catch (err) { res.status(500).json({ error: "Erro ao buscar perfil." }); }
 });
 
@@ -288,6 +297,13 @@ app.get('/posts', async (req, res) => {
         db.raw('(SELECT COUNT(*) FROM likes WHERE post_id = posts.id) as likes_count'),
         db.raw(`EXISTS(SELECT 1 FROM likes WHERE post_id = posts.id AND user_id = ?) as user_liked`, [currentUserId])
       );
+
+    // FILTRO DE BLOQUEIO: Não mostrar posts de usuários bloqueados no feed
+    if (currentUserId) {
+      query = query.whereNotIn('posts.user_id', function() {
+        this.select('blocked_id').from('blocks').where('blocker_id', currentUserId);
+      });
+    }
 
     if (userIdVisitado) query = query.where('posts.user_id', Number(userIdVisitado));
     if (tags) query = query.where('posts.tags', 'like', `%${tags.toLowerCase()}%`);
@@ -410,7 +426,6 @@ app.post('/users/:id/follow', async (req, res) => {
 
       const followerUser = await db('users').where({ id: followerId }).first();
 
-      // DISPARO DE NOTIFICAÇÃO EM TEMPO REAL
       io.emit(`notification_${id}`, {
         type: 'FOLLOW',
         title: 'Nova Conexão! ✨',
@@ -427,12 +442,11 @@ app.post('/users/:id/follow', async (req, res) => {
 });
 
 
-// ROTA DE CONTATOS (BACKEND) - Adicione ou substitua
+// ROTA DE CONTATOS (FILTRADA POR BLOQUEIO)
 app.get('/users/:id/contacts', async (req, res) => {
   try {
     const { id } = req.params;
     
-    // Busca usuários que eu sigo OU usuários que me seguem (Conexões)
     const contacts = await db('follows')
       .join('users', function() {
         this.on('follows.following_id', '=', 'users.id')
@@ -442,7 +456,13 @@ app.get('/users/:id/contacts', async (req, res) => {
         this.where('follows.follower_id', id)
           .orWhere('follows.following_id', id);
       })
-      .whereNot('users.id', id) // Não mostrar a si mesmo
+      .whereNot('users.id', id)
+      .whereNotIn('users.id', function() {
+        this.select('blocked_id').from('blocks').where('blocker_id', id)
+          .union(
+            this.select('blocker_id').from('blocks').where('blocked_id', id)
+          );
+      })
       .distinct('users.id', 'users.username', 'users.avatar_url', 'users.aura_color')
       .select();
 
@@ -452,18 +472,17 @@ app.get('/users/:id/contacts', async (req, res) => {
     res.status(500).json({ error: "Erro interno ao buscar contatos" });
   }
 });
+
+// BLOQUEAR
 app.post('/users/block', async (req, res) => {
   try {
     const { blocker_id, blocked_id } = req.body;
-
-    // 1. Salva o bloqueio
     await db('blocks').insert({
       blocker_id,
       blocked_id,
       created_at: new Date()
     });
 
-    // 2. Opcional: Deleta o "follow" entre eles automaticamente
     await db('follows')
       .where({ follower_id: blocker_id, following_id: blocked_id })
       .orWhere({ follower_id: blocked_id, following_id: blocker_id })
@@ -474,6 +493,18 @@ app.post('/users/block', async (req, res) => {
     res.status(500).json({ error: "Erro ao bloquear usuário" });
   }
 });
+
+// DESBLOQUEAR
+app.post('/users/unblock', async (req, res) => {
+  try {
+    const { blocker_id, blocked_id } = req.body;
+    await db('blocks').where({ blocker_id, blocked_id }).del();
+    res.json({ success: true, message: "Usuário desbloqueado" });
+  } catch (err) {
+    res.status(500).json({ error: "Erro ao desbloquear" });
+  }
+});
+
 app.get('/', (req, res) => res.json({ status: "online", message: "🌌 Aura Santuário Ativo!" }));
 
 server.listen(PORT, '0.0.0.0', () => console.log(`🚀 Porta ${PORT}`));
