@@ -276,13 +276,15 @@ app.get('/users/:id/inventory', async (req, res) => {
     const items = await db('user_inventory')
       .join('shop_items', 'user_inventory.item_id', 'shop_items.id')
       .where('user_inventory.user_id', req.params.id)
-      .select('shop_items.*', 'user_inventory.created_at as purchase_date');
+      // Agrupa pelo ID do item para não repetir
+      .distinct('shop_items.id', 'shop_items.name', 'shop_items.item_value', 'shop_items.category', 'shop_items.image_url')
+      .select();
+    
     res.json(items);
   } catch (err) {
     res.status(500).json({ error: "Erro ao buscar inventário" });
   }
 });
-
 
 
 // --- SHOP ---
