@@ -425,6 +425,22 @@ app.post('/users/:id/follow', async (req, res) => {
   }
 });
 
+
+app.get('/users/:id/contacts', async (req, res) => {
+  try {
+    const { id } = req.params;
+    // Busca os usuários que eu sigo
+    const contacts = await db('follows')
+      .join('users', 'follows.following_id', 'users.id')
+      .where('follows.follower_id', id)
+      .select('users.id', 'users.username', 'users.avatar_url', 'users.aura_color');
+    
+    res.json(contacts);
+  } catch (err) {
+    res.status(500).json({ error: "Erro ao buscar contatos" });
+  }
+});
+
 app.get('/', (req, res) => res.json({ status: "online", message: "🌌 Aura Santuário Ativo!" }));
 
 server.listen(PORT, '0.0.0.0', () => console.log(`🚀 Porta ${PORT}`));
