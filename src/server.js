@@ -80,10 +80,8 @@ io.on('connection', (socket) => {
 
   socket.on('send_message', async (data) => {
     try {
-      // BUSCA ATUALIZADA: Pega os dados mais recentes do usuário no banco
       const userRecord = await db('users').where({ username: data.user }).first();
       
-      // Lógica de Título baseada em XP
       let levelName = 'Iniciante';
       if (userRecord?.xp >= 5000) levelName = 'Mestre Zen';
       else if (userRecord?.xp >= 1000) levelName = 'Explorador';
@@ -92,7 +90,6 @@ io.on('connection', (socket) => {
         room: String(data.room),
         user: String(data.user),
         text: String(data.text),
-        // Usa a cor equipada no banco ou branco por padrão
         aura_color: userRecord?.aura_color || '#ffffff',
         aura_name: levelName,
         role: userRecord?.role || 'user',
@@ -102,6 +99,39 @@ io.on('connection', (socket) => {
       io.to(data.room).emit('receive_message', insertedMsg);
     } catch (err) { console.error("Erro msg:", err.message); }
   });
+});
+
+// --- ROTA DE XP COM BOOST ---
+app.post('/users/:id/update-xp', async (req, res) => {
+  const { id } = req.params;
+  const { xpToAdd } = req.body;
+
+  try {
+    const user = await db('users').where({ id }).first();
+    if (!user) return res.status(404).json({ error: "Usuário não encontrado" });
+
+    // Verifica se o usuário tem algum item de "Boost" no inventário
+    const boostItem = await db('user_inventory')
+      .join('shop_items', 'user_inventory.item_id', 'shop_items.id')
+      .where('user_inventory.user_id', id)
+      .where('shop_items.category', 'boost') // Certifique-se de criar itens com categoria 'boost'
+      .first();
+
+    const multiplier = boostItem ? 2 : 1;
+    const finalXpGain = (xpToAdd || 5) * multiplier;
+    const newXp = Number(user.xp || 0) + finalXpGain;
+
+    await db('users').where({ id }).update({ xp: newXp });
+
+    res.json({ 
+      success: true, 
+      xp: newXp, 
+      gained: finalXpGain, 
+      hasBoost: !!boostItem 
+    });
+  } catch (err) {
+    res.status(500).json({ error: "Erro ao atualizar XP" });
+  }
 });
 
 // --- AUTH ---
