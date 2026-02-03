@@ -452,7 +452,28 @@ app.get('/users/:id/contacts', async (req, res) => {
     res.status(500).json({ error: "Erro interno ao buscar contatos" });
   }
 });
+app.post('/users/block', async (req, res) => {
+  try {
+    const { blocker_id, blocked_id } = req.body;
 
+    // 1. Salva o bloqueio
+    await db('blocks').insert({
+      blocker_id,
+      blocked_id,
+      created_at: new Date()
+    });
+
+    // 2. Opcional: Deleta o "follow" entre eles automaticamente
+    await db('follows')
+      .where({ follower_id: blocker_id, following_id: blocked_id })
+      .orWhere({ follower_id: blocked_id, following_id: blocker_id })
+      .del();
+
+    res.json({ success: true, message: "Usuário bloqueado com sucesso" });
+  } catch (err) {
+    res.status(500).json({ error: "Erro ao bloquear usuário" });
+  }
+});
 app.get('/', (req, res) => res.json({ status: "online", message: "🌌 Aura Santuário Ativo!" }));
 
 server.listen(PORT, '0.0.0.0', () => console.log(`🚀 Porta ${PORT}`));
