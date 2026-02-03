@@ -385,27 +385,38 @@ app.post('/users/equip-aura', async (req, res) => {
 // --- ROTA DE SEGUIR (FOLLOW) ---
 app.post('/users/:id/follow', async (req, res) => {
   const { id } = req.params; // ID de quem vai ser seguido
-  const { followerId } = req.body; // Seu ID
+  const { followerId } = req.body; // Seu ID (quem está seguindo)
 
   try {
-    // Verifica se já segue
     const existing = await db('follows')
       .where({ follower_id: followerId, following_id: id })
       .first();
 
     if (existing) {
-      // Se já segue, a gente remove (Unfollow)
       await db('follows')
         .where({ follower_id: followerId, following_id: id })
         .del();
       return res.json({ followed: false });
     } else {
-      // Se não segue, a gente insere (Follow)
+      // 1. Salva no banco de dados
       await db('follows').insert({
         follower_id: followerId,
         following_id: id,
         created_at: new Date()
       });
+
+      // 2. Busca o nome de quem seguiu para enviar na notificação
+      const followerUser = await db('users').where({ id: followerId }).first();
+
+      // 3. DISPARO EM TEMPO REAL (Socket.io)
+      // Enviamos para uma "sala" ou "canal" único baseado no ID do usuário seguido
+      io.emit(`notification_${id}`, {
+        type: 'FOLLOW',
+        title: 'Nova Conexão! ✨',
+        message: `@${followerUser?.username || 'Alguém'} começou a te seguir!`,
+        fromId: followerId
+      });
+
       return res.json({ followed: true });
     }
   } catch (err) {
@@ -413,6 +424,7 @@ app.post('/users/:id/follow', async (req, res) => {
     res.status(500).json({ error: "Erro ao processar follow" });
   }
 });
+
 app.get('/', (req, res) => res.json({ status: "online", message: "🌌 Aura Santuário Ativo!" }));
 
 server.listen(PORT, '0.0.0.0', () => console.log(`🚀 Porta ${PORT}`));
