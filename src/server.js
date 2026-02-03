@@ -65,13 +65,36 @@ const streamUpload = (buffer, folder, resourceType) => {
   });
 };
 
+// --- LOGICA DE USUARIOS ONLINE (ADICIONADO) ---
+const roomUsers = {}; 
+
 // --- CHAT (SOCKET.IO) ---
 io.on('connection', (socket) => {
-  socket.on('join_room', async (roomName) => {
-    socket.join(roomName);
+  
+  // ADICIONADO: Lógica completa para rastrear quem entra
+  socket.on('join_room', async (data) => {
+    const room = typeof data === 'string' ? data : data.room;
+    const username = (typeof data === 'object' && data.user) ? data.user : 'Visitante';
+
+    socket.join(room);
+    socket.currentRoom = room;
+    socket.username = username;
+
+    // Gerencia lista de nomes online
+    if (!roomUsers[room]) roomUsers[room] = [];
+    if (!roomUsers[room].includes(username)) {
+      roomUsers[room].push(username);
+    }
+
+    // Envia contagem e nomes para o App
+    io.to(room).emit('room_users', {
+      count: roomUsers[room].length,
+      users: roomUsers[room]
+    });
+
     try {
       const messages = await db('messages')
-        .where({ room: String(roomName) })
+        .where({ room: String(room) })
         .orderBy('created_at', 'asc')
         .limit(50);
       socket.emit('previous_messages', messages);
@@ -100,6 +123,19 @@ io.on('connection', (socket) => {
 
       io.to(data.room).emit('receive_message', insertedMsg);
     } catch (err) { console.error("Erro msg:", err.message); }
+  });
+
+  // ADICIONADO: Remover da lista ao sair
+  socket.on('disconnect', () => {
+    const room = socket.currentRoom;
+    const user = socket.username;
+    if (room && roomUsers[room]) {
+      roomUsers[room] = roomUsers[room].filter(u => u !== user);
+      io.to(room).emit('room_users', {
+        count: roomUsers[room].length,
+        users: roomUsers[room]
+      });
+    }
   });
 });
 
@@ -211,10 +247,10 @@ app.get('/users/:id/profile', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Erro ao buscar perfil." }); }
 });
 
-// --- POSTS (ALTERADO PARA TAGS) ---
+// --- POSTS ---
 app.post('/posts/upload', uploadFields, async (req, res) => {
   try {
-    const { userId, title, description, tags } = req.body; // Recebe tags do App
+    const { userId, title, description, tags } = req.body; 
     if (!req.files || !req.files['video']) return res.status(400).json({ error: "Vídeo ausente." });
 
     const videoResult = await streamUpload(req.files['video'][0].buffer, 'aura_posts', 'video');
@@ -229,7 +265,7 @@ app.post('/posts/upload', uploadFields, async (req, res) => {
       user_id: Number(userId),
       title: title || "Sem título",
       description: description || "",
-      tags: tags || "", // Salva as hashtags limpas aqui
+      tags: tags || "", 
       media_url: videoResult.secure_url,
       thumbnail_url: thumbUrl,
       type: 'video',
@@ -240,7 +276,6 @@ app.post('/posts/upload', uploadFields, async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Falha no servidor" }); }
 });
 
-// --- LISTAGEM DE POSTS (ALTERADO PARA FILTRO DE TAGS/SEARCH) ---
 app.get('/posts', async (req, res) => {
   try {
     const { userId, userIdVisitado, search, tags } = req.query; 
@@ -253,17 +288,8 @@ app.get('/posts', async (req, res) => {
         db.raw(`EXISTS(SELECT 1 FROM likes WHERE post_id = posts.id AND user_id = ?) as user_liked`, [currentUserId])
       );
 
-    // Filtro por Usuário Específico
-    if (userIdVisitado) {
-        query = query.where('posts.user_id', Number(userIdVisitado));
-    }
-
-    // LÓGICA DE FILTRAGEM POR CATEGORIA/TAGS
-    if (tags) {
-        query = query.where('posts.tags', 'like', `%${tags.toLowerCase()}%`);
-    }
-
-    // LÓGICA DE BUSCA POR TEXTO (Título ou Descrição)
+    if (userIdVisitado) query = query.where('posts.user_id', Number(userIdVisitado));
+    if (tags) query = query.where('posts.tags', 'like', `%${tags.toLowerCase()}%`);
     if (search) {
         query = query.where(function() {
             this.where('posts.title', 'like', `%${search}%`)
@@ -277,7 +303,6 @@ app.get('/posts', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Erro ao buscar posts." }); }
 });
 
-// --- LIKES E COMENTÁRIOS ---
 app.post('/posts/:id/like', async (req, res) => {
   try {
     const { userId } = req.body;
@@ -309,7 +334,6 @@ app.get('/posts/:id/comments', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Erro nos comentários." }); }
 });
 
-// --- INVENTÁRIO ---
 app.get('/users/:id/inventory', async (req, res) => {
   try {
     const items = await db('user_inventory')
@@ -321,7 +345,6 @@ app.get('/users/:id/inventory', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Erro ao buscar inventário" }); }
 });
 
-// --- SHOP ---
 app.get('/shop', async (req, res) => {
   try { res.json(await db('shop_items').select('*')); } catch (err) { res.status(500).json({ error: "Erro loja." }); }
 });

@@ -16,6 +16,7 @@
     "cloudinary": "^1.41.3",
     "cors": "^2.8.6",
     "dotenv": "^17.2.3",
+    "expo-haptics": "^15.0.8",
     "express": "^5.2.1",
     "jsonwebtoken": "^9.0.3",
     "knex": "^3.1.0",
