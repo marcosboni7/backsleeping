@@ -84,7 +84,6 @@ io.on('connection', (socket) => {
       
       let levelName = 'Iniciante';
       const userXP = userRecord?.xp || 0;
-      // Níveis de Título
       if (userXP >= 10000) levelName = 'Divindade'; 
       else if (userXP >= 5000) levelName = 'Mestre Zen';
       else if (userXP >= 1000) levelName = 'Explorador';
@@ -117,10 +116,8 @@ app.post('/users/:id/update-xp', async (req, res) => {
     
     let multiplier = 1;
     if (isStaff) {
-      // Staff ganha 10x mais XP (Aura Infinita/Rápida)
       multiplier = 10; 
     } else {
-      // Verifica se usuário normal tem item de Boost no inventário
       const boostItem = await db('user_inventory')
         .join('shop_items', 'user_inventory.item_id', 'shop_items.id')
         .where('user_inventory.user_id', id)
@@ -214,10 +211,10 @@ app.get('/users/:id/profile', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Erro ao buscar perfil." }); }
 });
 
-// --- POSTS ---
+// --- POSTS (ALTERADO PARA TAGS) ---
 app.post('/posts/upload', uploadFields, async (req, res) => {
   try {
-    const { userId, title, description } = req.body;
+    const { userId, title, description, tags } = req.body; // Recebe tags do App
     if (!req.files || !req.files['video']) return res.status(400).json({ error: "Vídeo ausente." });
 
     const videoResult = await streamUpload(req.files['video'][0].buffer, 'aura_posts', 'video');
@@ -232,6 +229,7 @@ app.post('/posts/upload', uploadFields, async (req, res) => {
       user_id: Number(userId),
       title: title || "Sem título",
       description: description || "",
+      tags: tags || "", // Salva as hashtags limpas aqui
       media_url: videoResult.secure_url,
       thumbnail_url: thumbUrl,
       type: 'video',
@@ -242,9 +240,10 @@ app.post('/posts/upload', uploadFields, async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Falha no servidor" }); }
 });
 
+// --- LISTAGEM DE POSTS (ALTERADO PARA FILTRO DE TAGS/SEARCH) ---
 app.get('/posts', async (req, res) => {
   try {
-    const { userId, userIdVisitado } = req.query; 
+    const { userId, userIdVisitado, search, tags } = req.query; 
     const currentUserId = (userId && userId !== 'undefined') ? Number(userId) : 0;
     
     let query = db('posts')
@@ -254,7 +253,24 @@ app.get('/posts', async (req, res) => {
         db.raw(`EXISTS(SELECT 1 FROM likes WHERE post_id = posts.id AND user_id = ?) as user_liked`, [currentUserId])
       );
 
-    if (userIdVisitado) query = query.where('posts.user_id', Number(userIdVisitado));
+    // Filtro por Usuário Específico
+    if (userIdVisitado) {
+        query = query.where('posts.user_id', Number(userIdVisitado));
+    }
+
+    // LÓGICA DE FILTRAGEM POR CATEGORIA/TAGS
+    if (tags) {
+        query = query.where('posts.tags', 'like', `%${tags.toLowerCase()}%`);
+    }
+
+    // LÓGICA DE BUSCA POR TEXTO (Título ou Descrição)
+    if (search) {
+        query = query.where(function() {
+            this.where('posts.title', 'like', `%${search}%`)
+                .orWhere('posts.description', 'like', `%${search}%`)
+                .orWhere('posts.tags', 'like', `%${search.replace('#', '')}%`);
+        });
+    }
 
     const posts = await query.orderBy('posts.created_at', 'desc');
     res.json(posts);
@@ -330,19 +346,12 @@ app.post('/shop/buy', async (req, res) => {
   } catch (err) { res.status(400).json({ error: err.message }); }
 });
 
-// ROTA EQUIPAR
 app.post('/users/equip-aura', async (req, res) => {
   const { userId, color } = req.body;
   try {
-    // 1. Primeiro atualiza a cor
     await db('users').where({ id: Number(userId) }).update({ aura_color: color });
-
-    // 2. BUSCA o usuário atualizado com o saldo REAL que está no banco
     const updatedUser = await db('users').where({ id: Number(userId) }).first();
-
     if (!updatedUser) return res.status(404).json({ error: "Não encontrado" });
-
-    // 3. Retorna o usuário com o saldo que sobrou da compra
     return res.status(200).json({ success: true, user: updatedUser });
   } catch (err) { 
     res.status(500).json({ error: "Erro ao processar aura" }); 
