@@ -334,10 +334,19 @@ app.post('/shop/buy', async (req, res) => {
 app.post('/users/equip-aura', async (req, res) => {
   const { userId, color } = req.body;
   try {
-    const [updatedUser] = await db('users').where({ id: Number(userId) }).update({ aura_color: color }).returning('*');
+    // 1. Primeiro atualiza a cor
+    await db('users').where({ id: Number(userId) }).update({ aura_color: color });
+
+    // 2. BUSCA o usuário atualizado com o saldo REAL que está no banco
+    const updatedUser = await db('users').where({ id: Number(userId) }).first();
+
     if (!updatedUser) return res.status(404).json({ error: "Não encontrado" });
+
+    // 3. Retorna o usuário com o saldo que sobrou da compra
     return res.status(200).json({ success: true, user: updatedUser });
-  } catch (err) { res.status(500).json({ error: "Erro ao processar aura" }); }
+  } catch (err) { 
+    res.status(500).json({ error: "Erro ao processar aura" }); 
+  }
 });
 
 app.get('/', (req, res) => res.json({ status: "online", message: "🌌 Aura Santuário Ativo!" }));
