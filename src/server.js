@@ -100,20 +100,21 @@ io.on('connection', (socket) => {
 
   socket.on('send_message', async (data) => {
     try {
-      // Busca os dados atualizados do usuário que enviou a mensagem
+      // AJUSTE AQUI: Busca os dados REAIS do usuário no banco para pegar a foto de perfil
       const userRecord = await db('users').where({ username: data.user }).first();
       
       let levelName = data.aura_name || 'Iniciante';
-      const userXP = userRecord?.xp || 0;
+      
+      // Define a foto: prioriza a do banco, senão usa um placeholder
+      const userAvatar = userRecord?.avatar_url || 'https://www.pngall.com/wp-content/uploads/5/Profile-Avatar-PNG.png';
 
-      // SALVANDO A MENSAGEM COM avatar_url
       const [insertedMsg] = await db('messages').insert({
         room: String(data.room),
         user: String(data.user),
         text: String(data.text),
         aura_color: userRecord?.aura_color || '#ffffff',
         aura_name: levelName,
-        avatar_url: userRecord?.avatar_url || 'https://via.placeholder.com/150', // AQUI A MÁGICA ACONTECE
+        avatar_url: userAvatar, // SALVA A URL REAL DO CLOUDINARY AQUI
         role: userRecord?.role || 'user',
         created_at: new Date()
       }).returning('*');
@@ -380,6 +381,38 @@ app.post('/users/equip-aura', async (req, res) => {
   }
 });
 
+
+// --- ROTA DE SEGUIR (FOLLOW) ---
+app.post('/users/:id/follow', async (req, res) => {
+  const { id } = req.params; // ID de quem vai ser seguido
+  const { followerId } = req.body; // Seu ID
+
+  try {
+    // Verifica se já segue
+    const existing = await db('follows')
+      .where({ follower_id: followerId, following_id: id })
+      .first();
+
+    if (existing) {
+      // Se já segue, a gente remove (Unfollow)
+      await db('follows')
+        .where({ follower_id: followerId, following_id: id })
+        .del();
+      return res.json({ followed: false });
+    } else {
+      // Se não segue, a gente insere (Follow)
+      await db('follows').insert({
+        follower_id: followerId,
+        following_id: id,
+        created_at: new Date()
+      });
+      return res.json({ followed: true });
+    }
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erro ao processar follow" });
+  }
+});
 app.get('/', (req, res) => res.json({ status: "online", message: "🌌 Aura Santuário Ativo!" }));
 
 server.listen(PORT, '0.0.0.0', () => console.log(`🚀 Porta ${PORT}`));
