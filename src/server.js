@@ -343,6 +343,28 @@ app.post('/shop/buy', async (req, res) => {
     return res.status(400).json({ error: err.message });
   }
 });
+
+
+// ROTA ULTRA RÁPIDA SÓ PARA EQUIPAR AURA
+app.post('/users/equip-aura', async (req, res) => {
+  const { userId, color } = req.body;
+
+  try {
+    const [updatedUser] = await db('users')
+      .where({ id: Number(userId) })
+      .update({ aura_color: color })
+      .returning('*');
+
+    if (!updatedUser) {
+      return res.status(404).json({ error: "Usuário não encontrado" });
+    }
+
+    return res.status(200).json({ success: true, user: updatedUser });
+  } catch (err) {
+    console.error("Erro ao equipar:", err.message);
+    return res.status(500).json({ error: "Erro ao processar aura" });
+  }
+});
 app.get('/', (req, res) => res.json({ status: "online", message: "🌌 Aura Santuário!", cloud: "dmzukpnxz" }));
 
 server.listen(PORT, '0.0.0.0', () => console.log(`🚀 Porta ${PORT}`));
