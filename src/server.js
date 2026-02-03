@@ -222,5 +222,50 @@ app.get('/force-pass-5', async (req, res) => {
   res.send("Senha do user 5 resetada para 123456 via servidor!");
 });
 
+
+// Adicione isso no seu server.js
+app.get('/users/:id/contacts', async (req, res) => {
+  try {
+    const { id } = req.params;
+    // Busca quem o usuário segue (seguidores mútuos ou apenas seguidos)
+    const contacts = await db('follows')
+      .join('users', 'follows.following_id', 'users.id')
+      .where('follows.follower_id', id)
+      .select('users.id', 'users.username', 'users.avatar_url', 'users.aura_color');
+    
+    res.json(contacts);
+  } catch (err) {
+    console.error("Erro ao buscar contatos:", err);
+    res.status(500).json({ error: "Erro ao buscar contatos" });
+  }
+});
+
+// ROTA PARA PARAR DE SEGUIR (UNFOLLOW)
+app.post('/users/unfollow', async (req, res) => {
+  try {
+    const { follower_id, following_id } = req.body;
+
+    if (!follower_id || !following_id) {
+      return res.status(400).json({ error: "IDs obrigatórios" });
+    }
+
+    // Deleta o registro da tabela follows
+    const deleted = await db('follows')
+      .where({ 
+        follower_id: Number(follower_id), 
+        following_id: Number(following_id) 
+      })
+      .del();
+
+    console.log(`[UNFOLLOW] ${follower_id} parou de seguir ${following_id}`);
+    
+    // IMPORTANTE: Sempre responda algo para o App não dar "Conexão Falhou"
+    res.json({ success: true, message: "Deixou de seguir com sucesso" });
+  } catch (err) {
+    console.error("Erro no unfollow:", err);
+    res.status(500).json({ error: "Erro interno ao processar unfollow" });
+  }
+});
+
 app.get('/', (req, res) => res.json({ status: "online" }));
 server.listen(PORT, '0.0.0.0', () => console.log(`🚀 Porta ${PORT}`));
