@@ -427,17 +427,29 @@ app.post('/users/:id/follow', async (req, res) => {
 });
 
 
+// ROTA DE CONTATOS (BACKEND) - Adicione ou substitua
 app.get('/users/:id/contacts', async (req, res) => {
   try {
     const { id } = req.params;
-    const contacts = await db('follows')
-      .join('users', 'follows.following_id', 'users.id')
-      .where('follows.follower_id', id)
-      .select('users.id', 'users.username', 'users.avatar_url', 'users.aura_color');
     
+    // Busca usuários que eu sigo OU usuários que me seguem (Conexões)
+    const contacts = await db('follows')
+      .join('users', function() {
+        this.on('follows.following_id', '=', 'users.id')
+          .orOn('follows.follower_id', '=', 'users.id');
+      })
+      .where(function() {
+        this.where('follows.follower_id', id)
+          .orWhere('follows.following_id', id);
+      })
+      .whereNot('users.id', id) // Não mostrar a si mesmo
+      .distinct('users.id', 'users.username', 'users.avatar_url', 'users.aura_color')
+      .select();
+
     res.json(contacts);
   } catch (err) {
-    res.status(500).json({ error: "Erro ao buscar contatos" });
+    console.error("ERRO NA ROTA DE CONTATOS:", err.message);
+    res.status(500).json({ error: "Erro interno ao buscar contatos" });
   }
 });
 
