@@ -296,53 +296,33 @@ app.post('/shop/buy', async (req, res) => {
   try {
     const { userId, itemId } = req.body;
 
-    // Usamos uma variável para guardar o novo saldo fora da transação
-    let updatedBalance;
-
     await db.transaction(async (trx) => {
+      // 1. Verificar se o usuário já possui o item
+      const alreadyOwned = await trx('user_inventory')
+        .where({ user_id: userId, item_id: itemId })
+        .first();
+
+      if (alreadyOwned) {
+        throw new Error("Você já possui este item no seu inventário!");
+      }
+
       const item = await trx('shop_items').where({ id: itemId }).first();
       const user = await trx('users').where({ id: userId }).first();
 
-      if (!item) throw new Error("Item não encontrado!");
-      if (!user) throw new Error("Usuário não encontrado!");
+      if (!item || !user) throw new Error("Item ou usuário não encontrado.");
+      if (Number(user.balance) < Number(item.price)) throw new Error("Saldo insuficiente!");
 
-      const balanceAtual = Number(user.balance);
-      const precoItem = Number(item.price);
-
-      if (balanceAtual < precoItem) {
-        throw new Error("Saldo insuficiente!");
-      }
-
-      // 1. Debitar saldo
-      const [upd] = await trx('users')
-        .where({ id: userId })
-        .update({ balance: balanceAtual - precoItem })
-        .returning('*');
-
-      updatedBalance = upd.balance;
-
-      // 2. Adicionar ao inventário
-      await trx('user_inventory').insert({ 
-        user_id: userId, 
-        item_id: itemId 
+      // 2. Debitar e Adicionar
+      await trx('users').where({ id: userId }).update({ 
+        balance: Number(user.balance) - Number(item.price) 
       });
 
-      // 3. Se for aura, equipa
-      if (item.category === 'aura') {
-        await trx('users').where({ id: userId }).update({ aura_color: item.item_value });
-      }
+      await trx('user_inventory').insert({ user_id: userId, item_id: itemId });
     });
 
-    // RESPOSTA FORA DA TRANSAÇÃO (Mais seguro)
-    return res.status(200).json({ 
-      success: true, 
-      newBalance: updatedBalance 
-    });
-
+    res.status(200).json({ success: true, message: "Compra realizada!" });
   } catch (err) {
-    console.error("Erro na transação:", err.message);
-    // Se o erro for "já comprou" ou "saldo baixo", retornamos 400
-    return res.status(400).json({ error: err.message });
+    res.status(400).json({ error: err.message });
   }
 });
 
