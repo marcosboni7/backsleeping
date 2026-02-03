@@ -72,7 +72,6 @@ const roomUsers = {};
 io.on('connection', (socket) => {
   
   socket.on('join_room', async (data) => {
-    // Detecta se data é string (nome da sala) ou objeto { room, user }
     const room = typeof data === 'string' ? data : data.room;
     const username = (data && data.user) ? data.user : 'Visitante';
 
@@ -80,13 +79,11 @@ io.on('connection', (socket) => {
     socket.currentRoom = room;
     socket.username = username;
 
-    // Gerencia lista de nomes online por sala
     if (!roomUsers[room]) roomUsers[room] = [];
     if (!roomUsers[room].includes(username)) {
       roomUsers[room].push(username);
     }
 
-    // Envia contagem e lista de nomes atualizada para todos na sala
     io.to(room).emit('room_users', {
       count: roomUsers[room].length,
       users: roomUsers[room]
@@ -103,20 +100,20 @@ io.on('connection', (socket) => {
 
   socket.on('send_message', async (data) => {
     try {
+      // Busca os dados atualizados do usuário que enviou a mensagem
       const userRecord = await db('users').where({ username: data.user }).first();
       
-      let levelName = 'Iniciante';
+      let levelName = data.aura_name || 'Iniciante';
       const userXP = userRecord?.xp || 0;
-      if (userXP >= 10000) levelName = 'Divindade'; 
-      else if (userXP >= 5000) levelName = 'Mestre Zen';
-      else if (userXP >= 1000) levelName = 'Explorador';
 
+      // SALVANDO A MENSAGEM COM avatar_url
       const [insertedMsg] = await db('messages').insert({
         room: String(data.room),
         user: String(data.user),
         text: String(data.text),
         aura_color: userRecord?.aura_color || '#ffffff',
         aura_name: levelName,
+        avatar_url: userRecord?.avatar_url || 'https://via.placeholder.com/150', // AQUI A MÁGICA ACONTECE
         role: userRecord?.role || 'user',
         created_at: new Date()
       }).returning('*');
@@ -129,10 +126,7 @@ io.on('connection', (socket) => {
     const room = socket.currentRoom;
     const user = socket.username;
     if (room && roomUsers[room]) {
-      // Remove apenas o usuário que desconectou da lista
       roomUsers[room] = roomUsers[room].filter(u => u !== user);
-      
-      // Notifica a sala com a lista atualizada
       io.to(room).emit('room_users', {
         count: roomUsers[room].length,
         users: roomUsers[room]
@@ -141,7 +135,7 @@ io.on('connection', (socket) => {
   });
 });
 
-// --- ROTA DE XP COM MODO STAFF INFINITO ---
+// --- ROTA DE XP ---
 app.post('/users/:id/update-xp', async (req, res) => {
   const { id } = req.params;
   const { xpToAdd } = req.body;
