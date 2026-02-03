@@ -65,28 +65,28 @@ const streamUpload = (buffer, folder, resourceType) => {
   });
 };
 
-// --- LOGICA DE USUARIOS ONLINE (ADICIONADO) ---
+// --- LOGICA DE USUARIOS ONLINE ---
 const roomUsers = {}; 
 
 // --- CHAT (SOCKET.IO) ---
 io.on('connection', (socket) => {
   
-  // ADICIONADO: Lógica completa para rastrear quem entra
   socket.on('join_room', async (data) => {
+    // Detecta se data é string (nome da sala) ou objeto { room, user }
     const room = typeof data === 'string' ? data : data.room;
-    const username = (typeof data === 'object' && data.user) ? data.user : 'Visitante';
+    const username = (data && data.user) ? data.user : 'Visitante';
 
     socket.join(room);
     socket.currentRoom = room;
     socket.username = username;
 
-    // Gerencia lista de nomes online
+    // Gerencia lista de nomes online por sala
     if (!roomUsers[room]) roomUsers[room] = [];
     if (!roomUsers[room].includes(username)) {
       roomUsers[room].push(username);
     }
 
-    // Envia contagem e nomes para o App
+    // Envia contagem e lista de nomes atualizada para todos na sala
     io.to(room).emit('room_users', {
       count: roomUsers[room].length,
       users: roomUsers[room]
@@ -125,12 +125,14 @@ io.on('connection', (socket) => {
     } catch (err) { console.error("Erro msg:", err.message); }
   });
 
-  // ADICIONADO: Remover da lista ao sair
   socket.on('disconnect', () => {
     const room = socket.currentRoom;
     const user = socket.username;
     if (room && roomUsers[room]) {
+      // Remove apenas o usuário que desconectou da lista
       roomUsers[room] = roomUsers[room].filter(u => u !== user);
+      
+      // Notifica a sala com a lista atualizada
       io.to(room).emit('room_users', {
         count: roomUsers[room].length,
         users: roomUsers[room]
@@ -303,6 +305,7 @@ app.get('/posts', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Erro ao buscar posts." }); }
 });
 
+// --- LIKES E COMENTÁRIOS ---
 app.post('/posts/:id/like', async (req, res) => {
   try {
     const { userId } = req.body;
@@ -334,6 +337,7 @@ app.get('/posts/:id/comments', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Erro nos comentários." }); }
 });
 
+// --- INVENTÁRIO ---
 app.get('/users/:id/inventory', async (req, res) => {
   try {
     const items = await db('user_inventory')
@@ -345,6 +349,7 @@ app.get('/users/:id/inventory', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Erro ao buscar inventário" }); }
 });
 
+// --- SHOP ---
 app.get('/shop', async (req, res) => {
   try { res.json(await db('shop_items').select('*')); } catch (err) { res.status(500).json({ error: "Erro loja." }); }
 });
