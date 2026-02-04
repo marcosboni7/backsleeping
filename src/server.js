@@ -241,31 +241,30 @@ app.get('/users/:id/contacts', async (req, res) => {
 });
 
 // ROTA PARA PARAR DE SEGUIR (UNFOLLOW)
-app.post('/users/unfollow', async (req, res) => {
+// ROTA SEGUIR
+app.post('/users/follow', async (req, res) => {
   try {
     const { follower_id, following_id } = req.body;
-
-    if (!follower_id || !following_id) {
-      return res.status(400).json({ error: "IDs obrigatórios" });
+    // Evita duplicados
+    const exists = await db('follows').where({ follower_id, following_id }).first();
+    if (!exists) {
+      await db('follows').insert({ follower_id, following_id });
     }
-
-    // Deleta o registro da tabela follows
-    const deleted = await db('follows')
-      .where({ 
-        follower_id: Number(follower_id), 
-        following_id: Number(following_id) 
-      })
-      .del();
-
-    console.log(`[UNFOLLOW] ${follower_id} parou de seguir ${following_id}`);
-    
-    // IMPORTANTE: Sempre responda algo para o App não dar "Conexão Falhou"
-    res.json({ success: true, message: "Deixou de seguir com sucesso" });
+    res.json({ success: true, followed: true });
   } catch (err) {
-    console.error("Erro no unfollow:", err);
-    res.status(500).json({ error: "Erro interno ao processar unfollow" });
+    res.status(500).json({ error: "Erro ao seguir" });
   }
 });
 
+// ROTA PARAR DE SEGUIR
+app.post('/users/unfollow', async (req, res) => {
+  try {
+    const { follower_id, following_id } = req.body;
+    await db('follows').where({ follower_id, following_id }).del();
+    res.json({ success: true, followed: false });
+  } catch (err) {
+    res.status(500).json({ error: "Erro ao unfollow" });
+  }
+});
 app.get('/', (req, res) => res.json({ status: "online" }));
 server.listen(PORT, '0.0.0.0', () => console.log(`🚀 Porta ${PORT}`));
