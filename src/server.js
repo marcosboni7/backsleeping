@@ -58,6 +58,13 @@ const roomUsers = {};
 
 // --- CHAT (SOCKET.IO) ---
 io.on('connection', (socket) => {
+  // Identificação do usuário para mensagens privadas e notificações
+  const userId = socket.handshake.query.userId;
+  if (userId) {
+    socket.join(`user_${userId}`);
+    console.log(`📡 Usuário ${userId} sintonizado no canal privado.`);
+  }
+
   socket.on('join_room', async (data) => {
     const room = typeof data === 'string' ? data : data.room;
     const username = (data && data.user) ? data.user : 'Visitante';
@@ -77,13 +84,33 @@ io.on('connection', (socket) => {
     try {
       const userRecord = await db('users').where({ username: data.user }).first();
       const userAvatar = userRecord?.avatar_url || 'https://www.pngall.com/wp-content/uploads/5/Profile-Avatar-PNG.png';
+      
       const [insertedMsg] = await db('messages').insert({
-        room: String(data.room), user: String(data.user), text: String(data.text),
-        aura_color: userRecord?.aura_color || '#ffffff', aura_name: data.aura_name || 'Iniciante',
-        avatar_url: userAvatar, role: userRecord?.role || 'user',
-        sender_id: data.sender_id || userRecord?.id, receiver_id: data.receiver_id || null, created_at: new Date()
+        room: String(data.room), 
+        user: String(data.user), 
+        text: String(data.text),
+        aura_color: userRecord?.aura_color || '#ffffff', 
+        aura_name: data.aura_name || 'Iniciante',
+        avatar_url: userAvatar, 
+        role: userRecord?.role || 'user',
+        sender_id: data.sender_id || userRecord?.id, 
+        receiver_id: data.receiver_id || null, 
+        created_at: new Date()
       }).returning('*');
+
+      // 1. Envia para quem está na sala aberta
       io.to(data.room).emit('receive_message', insertedMsg);
+
+      // 2. Avisa o destinatário (Notificação Global)
+      if (data.receiver_id) {
+        // Canal de Alert que o AuthContext ouve
+        io.emit(`notification_${data.receiver_id}`, {
+          title: "Nova Mensagem",
+          message: `@${data.user} te enviou uma transmissão!`
+        });
+        // Canal técnico para atualizar a lista
+        io.emit(`new_message_${data.receiver_id}`, insertedMsg);
+      }
     } catch (err) { console.error("Erro msg:", err.message); }
   });
 
@@ -96,57 +123,23 @@ io.on('connection', (socket) => {
   });
 });
 
-// --- ROTA DE LOGIN (COM DEBUG) ---
+// --- ROTA DE LOGIN ---
 app.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
     const cleanEmail = email.trim().toLowerCase();
-    
-    console.log(`[LOGIN ATTEMPT] Email: ${cleanEmail}`);
-
     const user = await db('users').where({ email: cleanEmail }).first();
-
-    if (!user) {
-      console.log(`[LOGIN ERROR] Usuário não encontrado no banco: ${cleanEmail}`);
-      return res.status(401).json({ error: "Credenciais inválidas" });
-    }
+    if (!user) return res.status(401).json({ error: "Credenciais inválidas" });
 
     const isMatch = await bcrypt.compare(password, user.password);
-    console.log(`[LOGIN DEBUG] Senha digitada confere com o hash? ${isMatch}`);
-
-    if (!isMatch) {
-      return res.status(401).json({ error: "Credenciais inválidas" });
-    }
+    if (!isMatch) return res.status(401).json({ error: "Credenciais inválidas" });
 
     const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '7d' });
-    console.log(`[LOGIN SUCCESS] Usuário ${user.username} logado.`);
     res.json({ token, user });
-  } catch (err) {
-    console.error("[LOGIN CRITICAL ERR]", err);
-    res.status(500).json({ error: "Erro interno." });
-  }
+  } catch (err) { res.status(500).json({ error: "Erro interno." }); }
 });
 
-// --- RESTO DAS ROTAS (XP, REGISTER, PROFILE, POSTS, etc.) ---
-app.post('/users/:id/update-xp', async (req, res) => {
-  const { id } = req.params;
-  const { xpToAdd } = req.body;
-  try {
-    const user = await db('users').where({ id }).first();
-    if (!user) return res.status(404).json({ error: "Usuário não encontrado" });
-    const isStaff = user.role === 'admin' || user.role === 'staff';
-    let multiplier = isStaff ? 10 : 1;
-    if (!isStaff) {
-      const boost = await db('user_inventory').join('shop_items', 'user_inventory.item_id', 'shop_items.id')
-        .where('user_inventory.user_id', id).where('shop_items.category', 'boost').first();
-      if (boost) multiplier = 2;
-    }
-    const finalXp = Number(user.xp || 0) + ((xpToAdd || 5) * multiplier);
-    await db('users').where({ id }).update({ xp: finalXp });
-    res.json({ success: true, xp: finalXp, isStaffMode: isStaff });
-  } catch (err) { res.status(500).json({ error: "Erro XP" }); }
-});
-
+// --- ROTA DE REGISTRO ---
 app.post('/register', async (req, res) => {
   try {
     const { username, email, password } = req.body;
@@ -159,19 +152,84 @@ app.post('/register', async (req, res) => {
   } catch (err) { res.status(400).json({ error: "Erro no cadastro." }); }
 });
 
+// --- ROTA DE CONTATOS (MELHORADA) ---
+app.get('/users/:id/contacts', async (req, res) => {
+  try {
+    const userId = Number(req.params.id);
+
+    // IDs de quem o usuário segue
+    const followingIds = await db('follows')
+      .where('follower_id', userId)
+      .pluck('following_id');
+
+    // IDs de quem conversou com ele
+    const messages = await db('messages')
+      .where('sender_id', userId)
+      .orWhere('receiver_id', userId)
+      .select('sender_id', 'receiver_id');
+
+    const contactIds = new Set();
+    followingIds.forEach(id => contactIds.add(Number(id)));
+    messages.forEach(msg => {
+      if (Number(msg.sender_id) !== userId) contactIds.add(Number(msg.sender_id));
+      if (Number(msg.receiver_id) !== userId) contactIds.add(Number(msg.receiver_id));
+    });
+
+    const finalIds = Array.from(contactIds);
+    if (finalIds.length === 0) return res.json([]);
+
+    const contacts = await db('users')
+      .whereIn('id', finalIds)
+      .select('id', 'username', 'avatar_url');
+
+    const formatted = contacts.map(c => {
+      const isFollowing = followingIds.includes(c.id);
+      return {
+        ...c,
+        isRequest: !isFollowing, 
+        accepted: isFollowing
+      };
+    });
+
+    res.json(formatted);
+  } catch (err) { res.status(500).json({ error: "Erro contatos" }); }
+});
+
+// --- ROTAS DE SEGUIR / UNFOLLOW ---
+app.post('/users/follow', async (req, res) => {
+  try {
+    const { follower_id, following_id } = req.body;
+    const exists = await db('follows').where({ follower_id, following_id }).first();
+    if (!exists) await db('follows').insert({ follower_id, following_id });
+    res.json({ success: true, followed: true });
+  } catch (err) { res.status(500).json({ error: "Erro ao seguir" }); }
+});
+
+app.post('/users/unfollow', async (req, res) => {
+  try {
+    const { follower_id, following_id } = req.body;
+    await db('follows').where({ follower_id, following_id }).del();
+    res.json({ success: true, followed: false });
+  } catch (err) { res.status(500).json({ error: "Erro ao unfollow" }); }
+});
+
+// --- PERFIL ---
 app.get('/users/:id/profile', async (req, res) => {
   try {
     const targetId = Number(req.params.id);
     const currentUserId = Number(req.query.currentUserId);
     const user = await db('users').where({ id: targetId }).first();
     if(!user) return res.status(404).json({error: "Não encontrado"});
+    
     let isBlocked = false;
     if (currentUserId) {
       const check = await db('blocks').where({ blocker_id: currentUserId, blocked_id: targetId }).first();
       isBlocked = !!check;
     }
+
     const followers = await db('follows').where({ following_id: targetId }).count('id as count').first();
     const following = await db('follows').where({ follower_id: targetId }).count('id as count').first();
+    
     let isFollowing = false;
     if (currentUserId && !isBlocked) {
       const fCheck = await db('follows').where({ follower_id: currentUserId, following_id: targetId }).first();
@@ -181,6 +239,7 @@ app.get('/users/:id/profile', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Erro perfil" }); }
 });
 
+// --- POSTS ---
 app.get('/posts', async (req, res) => {
   try {
     const { userId, userIdVisitado, search, tags } = req.query; 
@@ -198,6 +257,22 @@ app.get('/posts', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Erro posts" }); }
 });
 
+// --- XP SYSTEM ---
+app.post('/users/:id/update-xp', async (req, res) => {
+  const { id } = req.params;
+  const { xpToAdd } = req.body;
+  try {
+    const user = await db('users').where({ id }).first();
+    if (!user) return res.status(404).json({ error: "Usuário não encontrado" });
+    const isStaff = user.role === 'admin' || user.role === 'staff';
+    let multiplier = isStaff ? 10 : 1;
+    const finalXp = Number(user.xp || 0) + ((xpToAdd || 5) * multiplier);
+    await db('users').where({ id }).update({ xp: finalXp });
+    res.json({ success: true, xp: finalXp, isStaffMode: isStaff });
+  } catch (err) { res.status(500).json({ error: "Erro XP" }); }
+});
+
+// --- BLOQUEIOS ---
 app.post('/users/block', async (req, res) => {
   try {
     const { blocker_id, blocked_id } = req.body;
@@ -215,93 +290,7 @@ app.post('/users/unblock', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Erro unblock" }); }
 });
 
-// ADICIONE ESTA ROTA DE EMERGÊNCIA PARA TESTAR O USER 5
-app.get('/force-pass-5', async (req, res) => {
-  const hash = await bcrypt.hash('123456', 10);
-  await db('users').where({ id: 5 }).update({ password: hash });
-  res.send("Senha do user 5 resetada para 123456 via servidor!");
-});
+// --- ROTA PADRÃO ---
+app.get('/', (req, res) => res.json({ status: "online", aura: "active" }));
 
-
-// ROTA PARA BUSCAR CONTATOS (PESSOAS QUE EU SIGO)
-app.get('/users/:id/contacts', async (req, res) => {
-  try {
-    const userId = Number(req.params.id);
-
-    // 1. Busca IDs de quem o usuário segue
-    const followingIds = await db('follows')
-      .where('follower_id', userId)
-      .pluck('following_id');
-
-    // 2. Busca IDs de quem tem mensagens trocadas com o usuário
-    // Procura onde o usuário é o remetente OU o destinatário
-    const messages = await db('messages')
-      .where('sender_id', userId)
-      .orWhere('receiver_id', userId)
-      .select('sender_id', 'receiver_id');
-
-    // Juntamos todos os IDs em um Set para não repetir
-    const contactIds = new Set();
-    
-    // Adiciona quem ele segue
-    followingIds.forEach(id => contactIds.add(Number(id)));
-    
-    // Adiciona quem conversou com ele (pegando sempre o ID da outra pessoa)
-    messages.forEach(msg => {
-      if (Number(msg.sender_id) !== userId) contactIds.add(Number(msg.sender_id));
-      if (Number(msg.receiver_id) !== userId) contactIds.add(Number(msg.receiver_id));
-    });
-
-    const finalIds = Array.from(contactIds);
-
-    if (finalIds.length === 0) return res.json([]);
-
-    // 3. Busca os dados dos usuários encontrados
-    const contacts = await db('users')
-      .whereIn('id', finalIds)
-      .select('id', 'username', 'avatar_url');
-
-    // 4. Formata para o Front-end
-    const formatted = contacts.map(c => {
-      const isFollowing = followingIds.includes(c.id);
-      return {
-        ...c,
-        isRequest: !isFollowing, // Se não segue mais, vira "solicitação" ou apenas chat sem follow
-        accepted: isFollowing
-      };
-    });
-
-    res.json(formatted);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Erro ao buscar contatos" });
-  }
-});
-// ROTA PARA PARAR DE SEGUIR (UNFOLLOW)
-// ROTA SEGUIR
-app.post('/users/follow', async (req, res) => {
-  try {
-    const { follower_id, following_id } = req.body;
-    // Evita duplicados
-    const exists = await db('follows').where({ follower_id, following_id }).first();
-    if (!exists) {
-      await db('follows').insert({ follower_id, following_id });
-    }
-    res.json({ success: true, followed: true });
-  } catch (err) {
-    res.status(500).json({ error: "Erro ao seguir" });
-  }
-});
-
-// ROTA PARAR DE SEGUIR
-app.post('/users/unfollow', async (req, res) => {
-  try {
-    const { follower_id, following_id } = req.body;
-    await db('follows').where({ follower_id, following_id }).del();
-    res.json({ success: true, followed: false });
-  } catch (err) {
-    res.status(500).json({ error: "Erro ao unfollow" });
-  }
-});
-app.get('/', (req, res) => res.json({ status: "online" }));
-server.listen(PORT, '0.0.0.0', () => console.log(`🚀 Porta ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`🚀 Sleeping Chat rodando na porta ${PORT}`));
