@@ -226,49 +226,52 @@ app.get('/force-pass-5', async (req, res) => {
 // ROTA PARA BUSCAR CONTATOS (PESSOAS QUE EU SIGO)
 app.get('/users/:id/contacts', async (req, res) => {
   try {
-    const { id } = req.params;
-    const userId = Number(id);
+    const userId = Number(req.params.id);
 
-    // 1. Pessoas que eu sigo
-    const following = await db('follows')
-      .join('users', 'follows.following_id', '=', 'users.id')
-      .where('follows.follower_id', userId)
-      .select('users.id', 'users.username', 'users.avatar_url')
-      .then(rows => rows.map(r => ({ ...r, isRequest: false, accepted: true })));
+    // 1. Pegar IDs de quem eu sigo
+    const followingIds = await db('follows')
+      .where('follower_id', userId)
+      .pluck('following_id');
 
-    // 2. Pessoas que me mandaram mensagem (e eu não sigo)
-    // Buscamos quem enviou msg para mim, mas o ID dela não está na minha lista de 'seguindo'
-    const followedIds = await db('follows').where('follower_id', userId).pluck('following_id');
-    
-    const messagesReceived = await db('messages')
-      .join('users', 'messages.sender_id', '=', 'users.id')
-      .where('messages.receiver_id', userId)
-      .whereNotIn('messages.sender_id', [...followedIds, userId]) // Não sigo e não sou eu
-      .distinct('users.id')
-      .select('users.id', 'users.username', 'users.avatar_url')
-      .then(rows => rows.map(r => ({ ...r, isRequest: true, accepted: false })));
+    // 2. Pegar IDs de quem interagiu comigo no chat (enviou ou recebeu)
+    const chatInteractors = await db('messages')
+      .where('sender_id', userId)
+      .orWhere('receiver_id', userId)
+      .select('sender_id', 'receiver_id');
 
-    // 3. Pessoas para quem EU mandei mensagem (mesmo sem seguir)
-    // Caso você inicie o papo, a pessoa precisa aparecer na sua lista também
-    const messagesSent = await db('messages')
-      .join('users', 'messages.receiver_id', '=', 'users.id')
-      .where('messages.sender_id', userId)
-      .whereNotIn('messages.receiver_id', [...followedIds, userId])
-      .distinct('users.id')
-      .select('users.id', 'users.username', 'users.avatar_url')
-      .then(rows => rows.map(r => ({ ...r, isRequest: false, accepted: true })));
+    // Criar um Set de IDs únicos para não repetir
+    const uniqueIds = new Set();
+    followingIds.forEach(id => uniqueIds.add(id));
+    chatInteractors.forEach(m => {
+      if (m.sender_id !== userId) uniqueIds.add(m.sender_id);
+      if (m.receiver_id !== userId) uniqueIds.add(m.receiver_id);
+    });
 
-    // Combina tudo e remove duplicados por ID
-    const allContacts = [...messagesReceived, ...following, ...messagesSent];
-    const uniqueContacts = Array.from(new Map(allContacts.map(item => [item.id, item])).values());
+    // Converter Set para Array
+    const finalIds = Array.from(uniqueIds);
 
-    res.json(uniqueContacts);
+    if (finalIds.length === 0) {
+      return res.json([]);
+    }
+
+    // 3. Buscar os dados desses usuários
+    const contacts = await db('users')
+      .whereIn('id', finalIds)
+      .select('id', 'username', 'avatar_url');
+
+    // 4. Adicionar a flag isRequest (é solicitação se eu NÃO sigo a pessoa)
+    const formattedContacts = contacts.map(contact => ({
+      ...contact,
+      isRequest: !followingIds.includes(contact.id),
+      accepted: followingIds.includes(contact.id)
+    }));
+
+    res.json(formattedContacts);
   } catch (err) {
-    console.error("Erro ao buscar contatos híbridos:", err);
-    res.status(500).json({ error: "Erro interno ao carregar chat" });
+    console.error("Erro na lista:", err);
+    res.status(500).json({ error: "Erro interno" });
   }
 });
-
 // ROTA PARA PARAR DE SEGUIR (UNFOLLOW)
 // ROTA SEGUIR
 app.post('/users/follow', async (req, res) => {
