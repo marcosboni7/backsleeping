@@ -227,14 +227,29 @@ app.get('/force-pass-5', async (req, res) => {
 app.get('/users/:id/contacts', async (req, res) => {
   try {
     const { id } = req.params;
+    const userId = Number(id);
 
-    // Busca os usuários que o ID atual está seguindo
-    const contacts = await db('follows')
+    // 1. Busca quem você segue (Contatos Confirmados)
+    const following = await db('follows')
       .join('users', 'follows.following_id', '=', 'users.id')
-      .where('follows.follower_id', id)
-      .select('users.id', 'users.username', 'users.avatar_url');
+      .where('follows.follower_id', userId)
+      .select('users.id', 'users.username', 'users.avatar_url')
+      .then(users => users.map(u => ({ ...u, isRequest: false, accepted: true })));
 
-    res.json(contacts);
+    // 2. Busca quem te mandou mensagem mas você NÃO segue (Solicitações)
+    // Buscamos IDs únicos que enviaram msg para você e não estão na sua lista de 'seguindo'
+    const followedIds = await db('follows').where('follower_id', userId).pluck('following_id');
+    
+    const requesters = await db('messages')
+      .join('users', 'messages.sender_id', '=', 'users.id')
+      .where('messages.receiver_id', userId)
+      .whereNotIn('messages.sender_id', [...followedIds, userId]) // não segue e não é você mesmo
+      .distinct('users.id')
+      .select('users.id', 'users.username', 'users.avatar_url')
+      .then(users => users.map(u => ({ ...u, isRequest: true, accepted: false })));
+
+    // Une as duas listas (Solicitações primeiro para dar destaque)
+    res.json([...requesters, ...following]);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erro ao buscar contatos" });
