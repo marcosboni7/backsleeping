@@ -223,19 +223,20 @@ app.get('/force-pass-5', async (req, res) => {
 });
 
 
-// Adicione isso no seu server.js
+// ROTA PARA BUSCAR CONTATOS (PESSOAS QUE EU SIGO)
 app.get('/users/:id/contacts', async (req, res) => {
   try {
     const { id } = req.params;
-    // Busca quem o usuário segue (seguidores mútuos ou apenas seguidos)
+
+    // Busca os usuários que o ID atual está seguindo
     const contacts = await db('follows')
-      .join('users', 'follows.following_id', 'users.id')
+      .join('users', 'follows.following_id', '=', 'users.id')
       .where('follows.follower_id', id)
-      .select('users.id', 'users.username', 'users.avatar_url', 'users.aura_color');
-    
+      .select('users.id', 'users.username', 'users.avatar_url');
+
     res.json(contacts);
   } catch (err) {
-    console.error("Erro ao buscar contatos:", err);
+    console.error(err);
     res.status(500).json({ error: "Erro ao buscar contatos" });
   }
 });
