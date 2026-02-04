@@ -228,25 +228,22 @@ app.get('/users/:id/contacts', async (req, res) => {
   try {
     const userId = Number(req.params.id);
 
-    // 1. Pegar IDs de quem eu sigo (Contatos normais)
+    // 1. Pega IDs de quem o usuário segue
     const followingIds = await db('follows')
       .where('follower_id', userId)
       .pluck('following_id');
 
-    // 2. Pegar IDs de quem interagiu comigo no CHAT (Quem mandou ou quem recebeu)
-    // Isso garante que se o "User A" mandou msg pro "User B", o "User A" apareça na lista do "User B"
+    // 2. Pega IDs de quem trocou mensagem com o usuário (enviou ou recebeu)
+    // ESSA PARTE É A QUE ESTÁ FALTANDO NO SEU CÓDIGO!
     const chatInteractors = await db('messages')
       .where('sender_id', userId)
       .orWhere('receiver_id', userId)
       .select('sender_id', 'receiver_id');
 
-    // Criar um Set para juntar todos os IDs sem repetir
+    // Criamos um Set para juntar todos os IDs sem duplicar
     const uniqueIds = new Set();
+    followingIds.forEach(id => uniqueIds.add(Number(id)));
     
-    // Adiciona quem eu sigo
-    followingIds.forEach(id => uniqueIds.add(id));
-    
-    // Adiciona quem conversou comigo (pegando sempre o ID da OUTRA pessoa)
     chatInteractors.forEach(m => {
       if (Number(m.sender_id) !== userId) uniqueIds.add(Number(m.sender_id));
       if (Number(m.receiver_id) !== userId) uniqueIds.add(Number(m.receiver_id));
@@ -254,29 +251,27 @@ app.get('/users/:id/contacts', async (req, res) => {
 
     const finalIds = Array.from(uniqueIds);
 
-    if (finalIds.length === 0) {
-      return res.json([]);
-    }
+    if (finalIds.length === 0) return res.json([]);
 
-    // 3. Buscar os dados (nome, avatar) desses usuários encontrados
+    // 3. Busca os dados desses usuários
     const contacts = await db('users')
       .whereIn('id', finalIds)
       .select('id', 'username', 'avatar_url');
 
-    // 4. Marcar quem é "Solicitação" (isRequest = true se eu não sigo a pessoa)
+    // 4. Formata para o Front-end saber quem é solicitação
     const formattedContacts = contacts.map(contact => {
-      const iFollow = followingIds.includes(contact.id);
+      const isFollowing = followingIds.includes(contact.id);
       return {
         ...contact,
-        isRequest: !iFollow, // Se eu não sigo, aparece como solicitação
-        accepted: iFollow    // Se eu sigo, já está aceito
+        isRequest: !isFollowing, // Se eu não sigo, é solicitação
+        accepted: isFollowing
       };
     });
 
     res.json(formattedContacts);
   } catch (err) {
-    console.error("Erro na lista de contatos:", err);
-    res.status(500).json({ error: "Erro interno ao carregar chat" });
+    console.error(err);
+    res.status(500).json({ error: "Erro interno" });
   }
 });
 // ROTA PARA PARAR DE SEGUIR (UNFOLLOW)
