@@ -157,44 +157,53 @@ app.get('/users/:id/contacts', async (req, res) => {
   try {
     const userId = Number(req.params.id);
 
-    // IDs de quem o usuário segue
-    const followingIds = await db('follows')
-      .where('follower_id', userId)
-      .pluck('following_id');
-
-    // IDs de quem conversou com ele
+    // 1. Pega IDs de quem tem conversa comigo (Independente de follow)
+    // Isso garante que mesmo se você parar de seguir, a conversa continua na lista
     const messages = await db('messages')
       .where('sender_id', userId)
       .orWhere('receiver_id', userId)
       .select('sender_id', 'receiver_id');
 
+    // 2. Pega IDs de quem eu sigo para saber quem é "amigo" e quem é "solicitação"
+    const followingIds = await db('follows')
+      .where('follower_id', userId)
+      .pluck('following_id');
+
     const contactIds = new Set();
-    followingIds.forEach(id => contactIds.add(Number(id)));
+    
+    // Adiciona todo mundo das mensagens primeiro
     messages.forEach(msg => {
       if (Number(msg.sender_id) !== userId) contactIds.add(Number(msg.sender_id));
       if (Number(msg.receiver_id) !== userId) contactIds.add(Number(msg.receiver_id));
     });
 
+    // Adiciona quem eu sigo (se já não estiver lá)
+    followingIds.forEach(id => contactIds.add(Number(id)));
+
     const finalIds = Array.from(contactIds);
     if (finalIds.length === 0) return res.json([]);
 
+    // Busca os dados reais dos usuários (username, avatar) que sobraram no Set
     const contacts = await db('users')
       .whereIn('id', finalIds)
       .select('id', 'username', 'avatar_url');
 
+    // Formata a resposta para o App saber como desenhar o card
     const formatted = contacts.map(c => {
       const isFollowing = followingIds.includes(c.id);
       return {
         ...c,
-        isRequest: !isFollowing, 
-        accepted: isFollowing
+        isRequest: !isFollowing, // Se eu NÃO sigo mas tem msg, vira SOLICITAÇÃO
+        accepted: isFollowing    // Se eu sigo, já está ACEITO
       };
     });
 
     res.json(formatted);
-  } catch (err) { res.status(500).json({ error: "Erro contatos" }); }
+  } catch (err) {
+    console.error("Erro na rota de contatos:", err);
+    res.status(500).json({ error: "Erro ao buscar contatos" });
+  }
 });
-
 // --- ROTAS DE SEGUIR / UNFOLLOW ---
 app.post('/users/follow', async (req, res) => {
   try {
