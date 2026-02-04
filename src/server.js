@@ -229,30 +229,43 @@ app.get('/users/:id/contacts', async (req, res) => {
     const { id } = req.params;
     const userId = Number(id);
 
-    // 1. Busca quem você segue (Contatos Confirmados)
+    // 1. Pessoas que eu sigo
     const following = await db('follows')
       .join('users', 'follows.following_id', '=', 'users.id')
       .where('follows.follower_id', userId)
       .select('users.id', 'users.username', 'users.avatar_url')
-      .then(users => users.map(u => ({ ...u, isRequest: false, accepted: true })));
+      .then(rows => rows.map(r => ({ ...r, isRequest: false, accepted: true })));
 
-    // 2. Busca quem te mandou mensagem mas você NÃO segue (Solicitações)
-    // Buscamos IDs únicos que enviaram msg para você e não estão na sua lista de 'seguindo'
+    // 2. Pessoas que me mandaram mensagem (e eu não sigo)
+    // Buscamos quem enviou msg para mim, mas o ID dela não está na minha lista de 'seguindo'
     const followedIds = await db('follows').where('follower_id', userId).pluck('following_id');
     
-    const requesters = await db('messages')
+    const messagesReceived = await db('messages')
       .join('users', 'messages.sender_id', '=', 'users.id')
       .where('messages.receiver_id', userId)
-      .whereNotIn('messages.sender_id', [...followedIds, userId]) // não segue e não é você mesmo
+      .whereNotIn('messages.sender_id', [...followedIds, userId]) // Não sigo e não sou eu
       .distinct('users.id')
       .select('users.id', 'users.username', 'users.avatar_url')
-      .then(users => users.map(u => ({ ...u, isRequest: true, accepted: false })));
+      .then(rows => rows.map(r => ({ ...r, isRequest: true, accepted: false })));
 
-    // Une as duas listas (Solicitações primeiro para dar destaque)
-    res.json([...requesters, ...following]);
+    // 3. Pessoas para quem EU mandei mensagem (mesmo sem seguir)
+    // Caso você inicie o papo, a pessoa precisa aparecer na sua lista também
+    const messagesSent = await db('messages')
+      .join('users', 'messages.receiver_id', '=', 'users.id')
+      .where('messages.sender_id', userId)
+      .whereNotIn('messages.receiver_id', [...followedIds, userId])
+      .distinct('users.id')
+      .select('users.id', 'users.username', 'users.avatar_url')
+      .then(rows => rows.map(r => ({ ...r, isRequest: false, accepted: true })));
+
+    // Combina tudo e remove duplicados por ID
+    const allContacts = [...messagesReceived, ...following, ...messagesSent];
+    const uniqueContacts = Array.from(new Map(allContacts.map(item => [item.id, item])).values());
+
+    res.json(uniqueContacts);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Erro ao buscar contatos" });
+    console.error("Erro ao buscar contatos híbridos:", err);
+    res.status(500).json({ error: "Erro interno ao carregar chat" });
   }
 });
 
