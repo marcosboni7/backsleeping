@@ -56,9 +56,8 @@ const streamUpload = (buffer, folder, resourceType) => {
 
 const roomUsers = {}; 
 
-// --- CHAT (SOCKET.IO) ---
+// --- CHAT (SOCKET.IO) - ATUALIZADO ---
 io.on('connection', (socket) => {
-  // Identificação do usuário para mensagens privadas e notificações
   const userId = socket.handshake.query.userId;
   if (userId) {
     socket.join(`user_${userId}`);
@@ -66,18 +65,31 @@ io.on('connection', (socket) => {
   }
 
   socket.on('join_room', async (data) => {
-    const room = typeof data === 'string' ? data : data.room;
+    // Correção: Garante que room seja string e trata erro para destravar o app
+    const room = String(typeof data === 'string' ? data : data.room);
     const username = (data && data.user) ? data.user : 'Visitante';
+    
     socket.join(room);
     socket.currentRoom = room;
     socket.username = username;
+
     if (!roomUsers[room]) roomUsers[room] = [];
     if (!roomUsers[room].includes(username)) roomUsers[room].push(username);
+    
     io.to(room).emit('room_users', { count: roomUsers[room].length, users: roomUsers[room] });
+    
     try {
-      const messages = await db('messages').where({ room: String(room) }).orderBy('created_at', 'asc').limit(50);
+      const messages = await db('messages')
+        .where({ room: room })
+        .orderBy('created_at', 'asc')
+        .limit(50);
+      
+      // Envia o histórico (Para o carregamento infinito no App)
       socket.emit('previous_messages', messages);
-    } catch (err) { console.log("Erro chat:", err.message); }
+    } catch (err) { 
+      console.log("Erro ao carregar histórico:", err.message);
+      socket.emit('previous_messages', []); // Envia vazio para destravar o loading
+    }
   });
 
   socket.on('send_message', async (data) => {
@@ -85,10 +97,10 @@ io.on('connection', (socket) => {
       const userRecord = await db('users').where({ username: data.user }).first();
       const userAvatar = userRecord?.avatar_url || 'https://www.pngall.com/wp-content/uploads/5/Profile-Avatar-PNG.png';
       
-      const [insertedMsg] = await db('messages').insert({
+      const messageData = {
         room: String(data.room), 
         user: String(data.user), 
-        text: String(data.text),
+        text: String(data.text), // Mantido como text para o frontend ler
         aura_color: userRecord?.aura_color || '#ffffff', 
         aura_name: data.aura_name || 'Iniciante',
         avatar_url: userAvatar, 
@@ -96,22 +108,25 @@ io.on('connection', (socket) => {
         sender_id: data.sender_id || userRecord?.id, 
         receiver_id: data.receiver_id || null, 
         created_at: new Date()
-      }).returning('*');
+      };
 
-      // 1. Envia para quem está na sala aberta
-      io.to(data.room).emit('receive_message', insertedMsg);
+      // Salva no banco
+      await db('messages').insert(messageData);
 
-      // 2. Avisa o destinatário (Notificação Global)
+      // Envia para a sala aberta
+      io.to(String(data.room)).emit('receive_message', messageData);
+
+      // Notificação e atualização de lista para o destinatário
       if (data.receiver_id) {
-        // Canal de Alert que o AuthContext ouve
         io.emit(`notification_${data.receiver_id}`, {
           title: "Nova Mensagem",
           message: `@${data.user} te enviou uma transmissão!`
         });
-        // Canal técnico para atualizar a lista
-        io.emit(`new_message_${data.receiver_id}`, insertedMsg);
+        io.emit(`new_message_${data.receiver_id}`, messageData);
       }
-    } catch (err) { console.error("Erro msg:", err.message); }
+    } catch (err) { 
+      console.error("Erro ao processar mensagem:", err.message); 
+    }
   });
 
   socket.on('disconnect', () => {
@@ -152,69 +167,47 @@ app.post('/register', async (req, res) => {
   } catch (err) { res.status(400).json({ error: "Erro no cadastro." }); }
 });
 
-// --- ROTA DE CONTATOS (MELHORADA) ---
-// --- ROTA DE CONTATOS (VERSÃO COM DEBUG) ---
+// --- ROTA DE CONTATOS (SISTEMA DE MENSAGENS + FOLLOWS) ---
 app.get('/users/:id/contacts', async (req, res) => {
   try {
     const userId = Number(req.params.id);
-    console.log(`[Chat] Buscando contatos para o usuário: ${userId}`);
-
-    // 1. Pega IDs de quem tem conversa comigo
     const messages = await db('messages')
       .where('sender_id', userId)
       .orWhere('receiver_id', userId)
       .select('sender_id', 'receiver_id');
 
-    console.log(`[Debug] Mensagens encontradas no banco:`, messages.length);
-
-    // 2. Pega IDs de quem eu sigo
     const followingIds = await db('follows')
       .where('follower_id', userId)
       .pluck('following_id');
 
-    console.log(`[Debug] IDs de pessoas que eu sigo:`, followingIds);
-
     const contactIds = new Set();
-    
-    // Adiciona IDs das mensagens
     messages.forEach(msg => {
       const sId = Number(msg.sender_id);
       const rId = Number(msg.receiver_id);
       if (sId !== userId) contactIds.add(sId);
       if (rId !== userId) contactIds.add(rId);
     });
-
-    // Adiciona IDs de quem eu sigo
     followingIds.forEach(id => contactIds.add(Number(id)));
 
     const finalIds = Array.from(contactIds);
-    console.log(`[Debug] Lista final de IDs únicos para exibir:`, finalIds);
+    if (finalIds.length === 0) return res.json([]);
 
-    if (finalIds.length === 0) {
-      return res.json([]);
-    }
+    const contacts = await db('users').whereIn('id', finalIds).select('id', 'username', 'avatar_url');
 
-    // Busca os dados reais dos usuários
-    const contacts = await db('users')
-      .whereIn('id', finalIds)
-      .select('id', 'username', 'avatar_url');
-
-    // Formata o objeto final
     const formatted = contacts.map(c => {
       const isFollowing = followingIds.includes(c.id);
       return {
         ...c,
-        isRequest: !isFollowing, // Se eu NÃO sigo, aparece como solicitação na lista
+        isRequest: !isFollowing,
         accepted: isFollowing
       };
     });
-
     res.json(formatted);
   } catch (err) {
-    console.error("❌ Erro fatal na rota de contatos:", err);
     res.status(500).json({ error: "Erro ao buscar contatos" });
   }
 });
+
 // --- ROTAS DE SEGUIR / UNFOLLOW ---
 app.post('/users/follow', async (req, res) => {
   try {
