@@ -228,50 +228,53 @@ app.get('/users/:id/contacts', async (req, res) => {
   try {
     const userId = Number(req.params.id);
 
-    // 1. Pega IDs de quem o usuário segue
+    // 1. Busca IDs de quem o usuário segue
     const followingIds = await db('follows')
       .where('follower_id', userId)
       .pluck('following_id');
 
-    // 2. Pega IDs de quem trocou mensagem com o usuário (enviou ou recebeu)
-    // ESSA PARTE É A QUE ESTÁ FALTANDO NO SEU CÓDIGO!
-    const chatInteractors = await db('messages')
+    // 2. Busca IDs de quem tem mensagens trocadas com o usuário
+    // Procura onde o usuário é o remetente OU o destinatário
+    const messages = await db('messages')
       .where('sender_id', userId)
       .orWhere('receiver_id', userId)
       .select('sender_id', 'receiver_id');
 
-    // Criamos um Set para juntar todos os IDs sem duplicar
-    const uniqueIds = new Set();
-    followingIds.forEach(id => uniqueIds.add(Number(id)));
+    // Juntamos todos os IDs em um Set para não repetir
+    const contactIds = new Set();
     
-    chatInteractors.forEach(m => {
-      if (Number(m.sender_id) !== userId) uniqueIds.add(Number(m.sender_id));
-      if (Number(m.receiver_id) !== userId) uniqueIds.add(Number(m.receiver_id));
+    // Adiciona quem ele segue
+    followingIds.forEach(id => contactIds.add(Number(id)));
+    
+    // Adiciona quem conversou com ele (pegando sempre o ID da outra pessoa)
+    messages.forEach(msg => {
+      if (Number(msg.sender_id) !== userId) contactIds.add(Number(msg.sender_id));
+      if (Number(msg.receiver_id) !== userId) contactIds.add(Number(msg.receiver_id));
     });
 
-    const finalIds = Array.from(uniqueIds);
+    const finalIds = Array.from(contactIds);
 
     if (finalIds.length === 0) return res.json([]);
 
-    // 3. Busca os dados desses usuários
+    // 3. Busca os dados dos usuários encontrados
     const contacts = await db('users')
       .whereIn('id', finalIds)
       .select('id', 'username', 'avatar_url');
 
-    // 4. Formata para o Front-end saber quem é solicitação
-    const formattedContacts = contacts.map(contact => {
-      const isFollowing = followingIds.includes(contact.id);
+    // 4. Formata para o Front-end
+    const formatted = contacts.map(c => {
+      const isFollowing = followingIds.includes(c.id);
       return {
-        ...contact,
-        isRequest: !isFollowing, // Se eu não sigo, é solicitação
+        ...c,
+        isRequest: !isFollowing, // Se não segue mais, vira "solicitação" ou apenas chat sem follow
         accepted: isFollowing
       };
     });
 
-    res.json(formattedContacts);
+    res.json(formatted);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Erro interno" });
+    res.status(500).json({ error: "Erro ao buscar contatos" });
   }
 });
 // ROTA PARA PARAR DE SEGUIR (UNFOLLOW)
