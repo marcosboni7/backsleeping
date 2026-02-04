@@ -153,54 +153,65 @@ app.post('/register', async (req, res) => {
 });
 
 // --- ROTA DE CONTATOS (MELHORADA) ---
+// --- ROTA DE CONTATOS (VERSÃO COM DEBUG) ---
 app.get('/users/:id/contacts', async (req, res) => {
   try {
     const userId = Number(req.params.id);
+    console.log(`[Chat] Buscando contatos para o usuário: ${userId}`);
 
-    // 1. Pega IDs de quem tem conversa comigo (Independente de follow)
-    // Isso garante que mesmo se você parar de seguir, a conversa continua na lista
+    // 1. Pega IDs de quem tem conversa comigo
     const messages = await db('messages')
       .where('sender_id', userId)
       .orWhere('receiver_id', userId)
       .select('sender_id', 'receiver_id');
 
-    // 2. Pega IDs de quem eu sigo para saber quem é "amigo" e quem é "solicitação"
+    console.log(`[Debug] Mensagens encontradas no banco:`, messages.length);
+
+    // 2. Pega IDs de quem eu sigo
     const followingIds = await db('follows')
       .where('follower_id', userId)
       .pluck('following_id');
 
+    console.log(`[Debug] IDs de pessoas que eu sigo:`, followingIds);
+
     const contactIds = new Set();
     
-    // Adiciona todo mundo das mensagens primeiro
+    // Adiciona IDs das mensagens
     messages.forEach(msg => {
-      if (Number(msg.sender_id) !== userId) contactIds.add(Number(msg.sender_id));
-      if (Number(msg.receiver_id) !== userId) contactIds.add(Number(msg.receiver_id));
+      const sId = Number(msg.sender_id);
+      const rId = Number(msg.receiver_id);
+      if (sId !== userId) contactIds.add(sId);
+      if (rId !== userId) contactIds.add(rId);
     });
 
-    // Adiciona quem eu sigo (se já não estiver lá)
+    // Adiciona IDs de quem eu sigo
     followingIds.forEach(id => contactIds.add(Number(id)));
 
     const finalIds = Array.from(contactIds);
-    if (finalIds.length === 0) return res.json([]);
+    console.log(`[Debug] Lista final de IDs únicos para exibir:`, finalIds);
 
-    // Busca os dados reais dos usuários (username, avatar) que sobraram no Set
+    if (finalIds.length === 0) {
+      return res.json([]);
+    }
+
+    // Busca os dados reais dos usuários
     const contacts = await db('users')
       .whereIn('id', finalIds)
       .select('id', 'username', 'avatar_url');
 
-    // Formata a resposta para o App saber como desenhar o card
+    // Formata o objeto final
     const formatted = contacts.map(c => {
       const isFollowing = followingIds.includes(c.id);
       return {
         ...c,
-        isRequest: !isFollowing, // Se eu NÃO sigo mas tem msg, vira SOLICITAÇÃO
-        accepted: isFollowing    // Se eu sigo, já está ACEITO
+        isRequest: !isFollowing, // Se eu NÃO sigo, aparece como solicitação na lista
+        accepted: isFollowing
       };
     });
 
     res.json(formatted);
   } catch (err) {
-    console.error("Erro na rota de contatos:", err);
+    console.error("❌ Erro fatal na rota de contatos:", err);
     res.status(500).json({ error: "Erro ao buscar contatos" });
   }
 });
