@@ -7,7 +7,6 @@ const multer = require('multer');
 const http = require('http'); 
 const { Server } = require('socket.io'); 
 const cloudinary = require('cloudinary').v2;
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY || 'sk_test_sua_chave_aqui');
 
 const app = express();
 const server = http.createServer(app); 
@@ -42,7 +41,6 @@ io.on('connection', (socket) => {
   const userId = socket.handshake.query.userId;
   if (userId) {
     socket.join(`user_${userId}`);
-    console.log(`📡 Usuário ${userId} sintonizado.`);
   }
 
   socket.on('join_room', async (data) => {
@@ -59,10 +57,7 @@ io.on('connection', (socket) => {
     io.to(room).emit('room_users', { count: roomUsers[room].length, users: roomUsers[room] });
     
     try {
-      const messages = await db('messages')
-        .where({ room: room })
-        .orderBy('created_at', 'asc')
-        .limit(50);
+      const messages = await db('messages').where({ room: room }).orderBy('created_at', 'asc').limit(50);
       socket.emit('previous_messages', messages);
     } catch (err) { 
       socket.emit('previous_messages', []); 
@@ -83,10 +78,8 @@ io.on('connection', (socket) => {
         receiver_id: data.receiver_id || null, 
         created_at: new Date()
       };
-
       await db('messages').insert(messageData);
       io.to(String(data.room)).emit('receive_message', messageData);
-
       if (data.receiver_id) {
         io.emit(`notification_${data.receiver_id}`, { title: "Nova Mensagem", message: `@${data.user} enviou uma transmissão!` });
         io.emit(`new_message_${data.receiver_id}`, messageData);
@@ -126,7 +119,7 @@ app.post('/register', async (req, res) => {
   } catch (err) { res.status(400).json({ error: "Erro no cadastro." }); }
 });
 
-// --- SISTEMA DE LOJA E INVENTÁRIO (CORRIGIDO E COMPLETO) ---
+// --- LOJA E INVENTÁRIO (SISTEMA DE MOEDAS INTERNAS) ---
 
 app.get('/shop', async (req, res) => {
   try {
@@ -173,23 +166,7 @@ app.post('/users/equip-aura', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Erro ao equipar." }); }
 });
 
-// --- SISTEMA DE PIX (STRIPE) ---
-
-app.post('/create-pix-payment', async (req, res) => {
-  const { amount, userId } = req.body;
-  try {
-    const paymentIntent = await stripe.paymentIntents.create({
-      amount: amount * 100,
-      currency: 'brl',
-      payment_method_types: ['pix'],
-      metadata: { userId: userId.toString() }
-    });
-    res.json({ clientSecret: paymentIntent.client_secret });
-  } catch (err) { res.status(500).json({ error: "Erro Stripe" }); }
-});
-
 // --- PERFIL E SOCIAL ---
-
 app.get('/users/:id/profile', async (req, res) => {
   try {
     const targetId = Number(req.params.id);
@@ -204,20 +181,20 @@ app.get('/users/:id/contacts', async (req, res) => {
   try {
     const userId = Number(req.params.id);
     const followingIds = await db('follows').where('follower_id', userId).pluck('following_id');
-    if (followingIds.length === 0) return res.json([]);
-    const contacts = await db('users').whereIn('id', followingIds).select('id', 'username', 'avatar_url');
+    const contacts = followingIds.length > 0 ? await db('users').whereIn('id', followingIds).select('id', 'username', 'avatar_url') : [];
     res.json(contacts);
   } catch (err) { res.status(500).json({ error: "Erro contatos" }); }
 });
 
 app.post('/users/follow', async (req, res) => {
-  const { follower_id, following_id } = req.body;
-  await db('follows').insert({ follower_id, following_id });
-  res.json({ success: true });
+  try {
+    const { follower_id, following_id } = req.body;
+    await db('follows').insert({ follower_id, following_id });
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: "Erro follow" }); }
 });
 
 // --- POSTS ---
-
 app.get('/posts', async (req, res) => {
   try {
     const posts = await db('posts')
@@ -230,23 +207,13 @@ app.get('/posts', async (req, res) => {
 
 // --- XP SYSTEM ---
 app.post('/users/:id/update-xp', async (req, res) => {
-  const { id } = req.params;
-  const { xpToAdd } = req.body;
   try {
-    const user = await db('users').where({ id }).first();
+    const user = await db('users').where({ id: req.params.id }).first();
     const multiplier = (user.role === 'admin' || user.role === 'staff') ? 10 : 1;
-    const finalXp = Number(user.xp || 0) + ((xpToAdd || 5) * multiplier);
-    await db('users').where({ id }).update({ xp: finalXp });
+    const finalXp = Number(user.xp || 0) + (5 * multiplier);
+    await db('users').where({ id: req.params.id }).update({ xp: finalXp });
     res.json({ success: true, xp: finalXp });
   } catch (err) { res.status(500).json({ error: "Erro XP" }); }
-});
-
-// --- BLOQUEIOS ---
-app.post('/users/block', async (req, res) => {
-  const { blocker_id, blocked_id } = req.body;
-  await db('blocks').insert({ blocker_id, blocked_id, created_at: new Date() });
-  await db('follows').where({ follower_id: blocker_id, following_id: blocked_id }).del();
-  res.json({ success: true });
 });
 
 // --- ROTA PADRÃO ---
