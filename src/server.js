@@ -343,6 +343,30 @@ app.post('/shop/buy', async (req, res) => {
     res.status(500).json({ error: "Erro ao processar pagamento." });
   }
 });
+
+
+// ATENÇÃO: A URL deve ser exatamente esta para bater com o seu App
+app.get('/users/:id/inventory', async (req, res) => {
+  try {
+    const userId = req.params.id;
+
+    // Buscamos os itens cruzando com a tabela products
+    // Use 'products' ou 'produtos' dependendo do nome que funcionou na sua DB
+    const myItems = await db('inventory')
+      .join('products', 'inventory.item_id', 'products.id')
+      .where('inventory.user_id', userId)
+      .select('products.*', 'inventory.id as inventory_id');
+
+    console.log(`📦 Inventário do user ${userId} carregado.`);
+    res.json(myItems); // Retorna JSON (O erro sumirá aqui)
+    
+  } catch (err) {
+    console.error("❌ Erro na rota de inventário:", err.message);
+    // Retornamos um array vazio em JSON para o App não tentar ler HTML
+    res.json([]); 
+  }
+});
+
 // --- ROTA PADRÃO ---
 app.get('/', (req, res) => res.json({ status: "online", aura: "active" }));
 
