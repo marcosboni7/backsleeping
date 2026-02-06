@@ -7,6 +7,7 @@ const multer = require('multer');
 const http = require('http'); 
 const { Server } = require('socket.io'); 
 const cloudinary = require('cloudinary').v2;
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY || 'sk_test_sua_chave_aqui');
 
 const app = express();
 const server = http.createServer(app); 
@@ -30,42 +31,21 @@ const upload = multer({
   limits: { fileSize: 50 * 1024 * 1024 } 
 });
 
-const uploadFields = upload.fields([
-  { name: 'video', maxCount: 1 },
-  { name: 'thumbnail', maxCount: 1 },
-  { name: 'avatar', maxCount: 1 }
-]);
-
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-// --- FUNÇÃO AUXILIAR: STREAM UPLOAD ---
-const streamUpload = (buffer, folder, resourceType) => {
-  return new Promise((resolve, reject) => {
-    const options = { folder, resource_type: resourceType };
-    if (resourceType === 'video') options.chunk_size = 6000000;
-    else options.transformation = [{ quality: "auto" }];
-
-    const stream = cloudinary.uploader.upload_stream(options, (error, result) => {
-      if (result) resolve(result); else reject(error);
-    });
-    stream.end(buffer);
-  });
-};
-
 const roomUsers = {}; 
 
-// --- CHAT (SOCKET.IO) - ATUALIZADO ---
+// --- CHAT (SOCKET.IO) ---
 io.on('connection', (socket) => {
   const userId = socket.handshake.query.userId;
   if (userId) {
     socket.join(`user_${userId}`);
-    console.log(`📡 Usuário ${userId} sintonizado no canal privado.`);
+    console.log(`📡 Usuário ${userId} sintonizado.`);
   }
 
   socket.on('join_room', async (data) => {
-    // Correção: Garante que room seja string e trata erro para destravar o app
     const room = String(typeof data === 'string' ? data : data.room);
     const username = (data && data.user) ? data.user : 'Visitante';
     
@@ -83,50 +63,35 @@ io.on('connection', (socket) => {
         .where({ room: room })
         .orderBy('created_at', 'asc')
         .limit(50);
-      
-      // Envia o histórico (Para o carregamento infinito no App)
       socket.emit('previous_messages', messages);
     } catch (err) { 
-      console.log("Erro ao carregar histórico:", err.message);
-      socket.emit('previous_messages', []); // Envia vazio para destravar o loading
+      socket.emit('previous_messages', []); 
     }
   });
 
   socket.on('send_message', async (data) => {
     try {
       const userRecord = await db('users').where({ username: data.user }).first();
-      const userAvatar = userRecord?.avatar_url || 'https://www.pngall.com/wp-content/uploads/5/Profile-Avatar-PNG.png';
-      
       const messageData = {
         room: String(data.room), 
         user: String(data.user), 
-        text: String(data.text), // Mantido como text para o frontend ler
+        text: String(data.text), 
         aura_color: userRecord?.aura_color || '#ffffff', 
-        aura_name: data.aura_name || 'Iniciante',
-        avatar_url: userAvatar, 
+        avatar_url: userRecord?.avatar_url || 'https://www.pngall.com/wp-content/uploads/5/Profile-Avatar-PNG.png', 
         role: userRecord?.role || 'user',
         sender_id: data.sender_id || userRecord?.id, 
         receiver_id: data.receiver_id || null, 
         created_at: new Date()
       };
 
-      // Salva no banco
       await db('messages').insert(messageData);
-
-      // Envia para a sala aberta
       io.to(String(data.room)).emit('receive_message', messageData);
 
-      // Notificação e atualização de lista para o destinatário
       if (data.receiver_id) {
-        io.emit(`notification_${data.receiver_id}`, {
-          title: "Nova Mensagem",
-          message: `@${data.user} te enviou uma transmissão!`
-        });
+        io.emit(`notification_${data.receiver_id}`, { title: "Nova Mensagem", message: `@${data.user} enviou uma transmissão!` });
         io.emit(`new_message_${data.receiver_id}`, messageData);
       }
-    } catch (err) { 
-      console.error("Erro ao processar mensagem:", err.message); 
-    }
+    } catch (err) { console.error("Erro mensagem:", err.message); }
   });
 
   socket.on('disconnect', () => {
@@ -138,23 +103,17 @@ io.on('connection', (socket) => {
   });
 });
 
-// --- ROTA DE LOGIN ---
+// --- AUTENTICAÇÃO ---
 app.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
-    const cleanEmail = email.trim().toLowerCase();
-    const user = await db('users').where({ email: cleanEmail }).first();
-    if (!user) return res.status(401).json({ error: "Credenciais inválidas" });
-
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) return res.status(401).json({ error: "Credenciais inválidas" });
-
+    const user = await db('users').where({ email: email.trim().toLowerCase() }).first();
+    if (!user || !(await bcrypt.compare(password, user.password))) return res.status(401).json({ error: "Credenciais inválidas" });
     const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '7d' });
     res.json({ token, user });
   } catch (err) { res.status(500).json({ error: "Erro interno." }); }
 });
 
-// --- ROTA DE REGISTRO ---
 app.post('/register', async (req, res) => {
   try {
     const { username, email, password } = req.body;
@@ -167,105 +126,104 @@ app.post('/register', async (req, res) => {
   } catch (err) { res.status(400).json({ error: "Erro no cadastro." }); }
 });
 
-// --- ROTA DE CONTATOS (SISTEMA DE MENSAGENS + FOLLOWS) ---
-app.get('/users/:id/contacts', async (req, res) => {
+// --- SISTEMA DE LOJA E INVENTÁRIO (CORRIGIDO E COMPLETO) ---
+
+app.get('/shop', async (req, res) => {
   try {
-    const userId = Number(req.params.id);
-    const messages = await db('messages')
-      .where('sender_id', userId)
-      .orWhere('receiver_id', userId)
-      .select('sender_id', 'receiver_id');
+    const items = await db('products').select('*');
+    res.json(items);
+  } catch (err) { res.status(500).json({ error: "Erro ao carregar a loja." }); }
+});
 
-    const followingIds = await db('follows')
-      .where('follower_id', userId)
-      .pluck('following_id');
+app.post('/shop/buy', async (req, res) => {
+  const { userId, itemId } = req.body;
+  try {
+    const user = await db('users').where({ id: userId }).first();
+    const item = await db('products').where({ id: itemId }).first();
 
-    const contactIds = new Set();
-    messages.forEach(msg => {
-      const sId = Number(msg.sender_id);
-      const rId = Number(msg.receiver_id);
-      if (sId !== userId) contactIds.add(sId);
-      if (rId !== userId) contactIds.add(rId);
+    if (!user || !item) return res.status(404).json({ error: "Dados inválidos." });
+    if (Number(user.balance) < Number(item.price)) return res.status(400).json({ error: "Saldo insuficiente!" });
+
+    await db.transaction(async (trx) => {
+      await trx('users').where({ id: userId }).update({ balance: Number(user.balance) - Number(item.price) });
+      await trx('inventory').insert({ user_id: userId, item_id: itemId, acquired_at: new Date() });
     });
-    followingIds.forEach(id => contactIds.add(Number(id)));
 
-    const finalIds = Array.from(contactIds);
-    if (finalIds.length === 0) return res.json([]);
+    const updatedUser = await db('users').where({ id: userId }).first();
+    res.json({ success: true, user: updatedUser });
+  } catch (err) { res.status(500).json({ error: "Erro na compra." }); }
+});
 
-    const contacts = await db('users').whereIn('id', finalIds).select('id', 'username', 'avatar_url');
+app.get('/users/:id/inventory', async (req, res) => {
+  try {
+    const myItems = await db('inventory')
+      .join('products', 'inventory.item_id', 'products.id')
+      .where('inventory.user_id', req.params.id)
+      .select('products.*', 'inventory.id as inventory_id');
+    res.json(myItems);
+  } catch (err) { res.json([]); }
+});
 
-    const formatted = contacts.map(c => {
-      const isFollowing = followingIds.includes(c.id);
-      return {
-        ...c,
-        isRequest: !isFollowing,
-        accepted: isFollowing
-      };
+app.post('/users/equip-aura', async (req, res) => {
+  try {
+    const { userId, color } = req.body;
+    await db('users').where({ id: userId }).update({ aura_color: color });
+    const user = await db('users').where({ id: userId }).first();
+    res.json({ success: true, user });
+  } catch (err) { res.status(500).json({ error: "Erro ao equipar." }); }
+});
+
+// --- SISTEMA DE PIX (STRIPE) ---
+
+app.post('/create-pix-payment', async (req, res) => {
+  const { amount, userId } = req.body;
+  try {
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: amount * 100,
+      currency: 'brl',
+      payment_method_types: ['pix'],
+      metadata: { userId: userId.toString() }
     });
-    res.json(formatted);
-  } catch (err) {
-    res.status(500).json({ error: "Erro ao buscar contatos" });
-  }
+    res.json({ clientSecret: paymentIntent.client_secret });
+  } catch (err) { res.status(500).json({ error: "Erro Stripe" }); }
 });
 
-// --- ROTAS DE SEGUIR / UNFOLLOW ---
-app.post('/users/follow', async (req, res) => {
-  try {
-    const { follower_id, following_id } = req.body;
-    const exists = await db('follows').where({ follower_id, following_id }).first();
-    if (!exists) await db('follows').insert({ follower_id, following_id });
-    res.json({ success: true, followed: true });
-  } catch (err) { res.status(500).json({ error: "Erro ao seguir" }); }
-});
+// --- PERFIL E SOCIAL ---
 
-app.post('/users/unfollow', async (req, res) => {
-  try {
-    const { follower_id, following_id } = req.body;
-    await db('follows').where({ follower_id, following_id }).del();
-    res.json({ success: true, followed: false });
-  } catch (err) { res.status(500).json({ error: "Erro ao unfollow" }); }
-});
-
-// --- PERFIL ---
 app.get('/users/:id/profile', async (req, res) => {
   try {
     const targetId = Number(req.params.id);
-    const currentUserId = Number(req.query.currentUserId);
     const user = await db('users').where({ id: targetId }).first();
-    if(!user) return res.status(404).json({error: "Não encontrado"});
-    
-    let isBlocked = false;
-    if (currentUserId) {
-      const check = await db('blocks').where({ blocker_id: currentUserId, blocked_id: targetId }).first();
-      isBlocked = !!check;
-    }
-
     const followers = await db('follows').where({ following_id: targetId }).count('id as count').first();
     const following = await db('follows').where({ follower_id: targetId }).count('id as count').first();
-    
-    let isFollowing = false;
-    if (currentUserId && !isBlocked) {
-      const fCheck = await db('follows').where({ follower_id: currentUserId, following_id: targetId }).first();
-      isFollowing = !!fCheck;
-    }
-    res.json({ ...user, followers: parseInt(followers.count || 0), following: parseInt(following.count || 0), isFollowing, isBlocked });
+    res.json({ ...user, followers: parseInt(followers.count || 0), following: parseInt(following.count || 0) });
   } catch (err) { res.status(500).json({ error: "Erro perfil" }); }
 });
 
+app.get('/users/:id/contacts', async (req, res) => {
+  try {
+    const userId = Number(req.params.id);
+    const followingIds = await db('follows').where('follower_id', userId).pluck('following_id');
+    if (followingIds.length === 0) return res.json([]);
+    const contacts = await db('users').whereIn('id', followingIds).select('id', 'username', 'avatar_url');
+    res.json(contacts);
+  } catch (err) { res.status(500).json({ error: "Erro contatos" }); }
+});
+
+app.post('/users/follow', async (req, res) => {
+  const { follower_id, following_id } = req.body;
+  await db('follows').insert({ follower_id, following_id });
+  res.json({ success: true });
+});
+
 // --- POSTS ---
+
 app.get('/posts', async (req, res) => {
   try {
-    const { userId, userIdVisitado, search, tags } = req.query; 
-    const currentUserId = (userId && userId !== 'undefined') ? Number(userId) : 0;
-    let query = db('posts').join('users', 'posts.user_id', 'users.id')
-      .select('posts.*', 'users.username', 'users.avatar_url', 'users.aura_color',
-        db.raw('(SELECT COUNT(*) FROM likes WHERE post_id = posts.id) as likes_count'),
-        db.raw(`EXISTS(SELECT 1 FROM likes WHERE post_id = posts.id AND user_id = ?) as user_liked`, [currentUserId])
-      );
-    if (currentUserId) query = query.whereNotIn('posts.user_id', function() { this.select('blocked_id').from('blocks').where('blocker_id', currentUserId); });
-    if (userIdVisitado) query = query.where('posts.user_id', Number(userIdVisitado));
-    if (tags) query = query.where('posts.tags', 'like', `%${tags.toLowerCase()}%`);
-    const posts = await query.orderBy('posts.created_at', 'desc');
+    const posts = await db('posts')
+      .join('users', 'posts.user_id', 'users.id')
+      .select('posts.*', 'users.username', 'users.avatar_url', 'users.aura_color')
+      .orderBy('posts.created_at', 'desc');
     res.json(posts);
   } catch (err) { res.status(500).json({ error: "Erro posts" }); }
 });
@@ -276,95 +234,19 @@ app.post('/users/:id/update-xp', async (req, res) => {
   const { xpToAdd } = req.body;
   try {
     const user = await db('users').where({ id }).first();
-    if (!user) return res.status(404).json({ error: "Usuário não encontrado" });
-    const isStaff = user.role === 'admin' || user.role === 'staff';
-    let multiplier = isStaff ? 10 : 1;
+    const multiplier = (user.role === 'admin' || user.role === 'staff') ? 10 : 1;
     const finalXp = Number(user.xp || 0) + ((xpToAdd || 5) * multiplier);
     await db('users').where({ id }).update({ xp: finalXp });
-    res.json({ success: true, xp: finalXp, isStaffMode: isStaff });
+    res.json({ success: true, xp: finalXp });
   } catch (err) { res.status(500).json({ error: "Erro XP" }); }
 });
 
 // --- BLOQUEIOS ---
 app.post('/users/block', async (req, res) => {
-  try {
-    const { blocker_id, blocked_id } = req.body;
-    await db('blocks').insert({ blocker_id, blocked_id, created_at: new Date() });
-    await db('follows').where({ follower_id: blocker_id, following_id: blocked_id }).orWhere({ follower_id: blocked_id, following_id: blocker_id }).del();
-    res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: "Erro block" }); }
-});
-
-app.post('/users/unblock', async (req, res) => {
-  try {
-    const { blocker_id, blocked_id } = req.body;
-    await db('blocks').where({ blocker_id, blocked_id }).del();
-    res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: "Erro unblock" }); }
-});
-// --- ROTA PARA LISTAR ITENS DA LOJA ---
-app.get('/shop', async (req, res) => {
-  try {
-    // Busca os produtos da sua tabela 'products'
-    const items = await db('products').select('*');
-    res.json(items);
-  } catch (err) {
-    console.error("Erro ao buscar produtos:", err.message);
-    res.status(500).json({ error: "Erro ao carregar a loja." });
-  }
-});
-
-// --- ROTA PARA PROCESSAR A COMPRA ---
-app.post('/shop/buy', async (req, res) => {
-  const { userId, itemId } = req.body;
-  
-  try {
-    // 1. Busca o usuário e o item
-    const user = await db('users').where({ id: userId }).first();
-    const item = await db('products').where({ id: itemId }).first();
-
-    if (!user || !item) return res.status(404).json({ error: "Usuário ou Item não encontrado." });
-
-    // 2. Verifica se tem saldo
-    if (Number(user.balance) < Number(item.price)) {
-      return res.status(400).json({ error: "Saldo insuficiente!" });
-    }
-
-    // 3. Deduz o valor e atualiza o banco
-    const newBalance = Number(user.balance) - Number(item.price);
-    await db('users').where({ id: userId }).update({ balance: newBalance });
-
-    // 4. (Opcional) Aqui você pode inserir o item numa tabela 'inventory' se tiver
-    // await db('inventory').insert({ user_id: userId, item_id: itemId });
-
-    res.json({ success: true, newBalance });
-  } catch (err) {
-    console.error("Erro na compra:", err.message);
-    res.status(500).json({ error: "Erro ao processar pagamento." });
-  }
-});
-
-
-// ATENÇÃO: A URL deve ser exatamente esta para bater com o seu App
-app.get('/users/:id/inventory', async (req, res) => {
-  try {
-    const userId = req.params.id;
-
-    // Buscamos os itens cruzando com a tabela products
-    // Use 'products' ou 'produtos' dependendo do nome que funcionou na sua DB
-    const myItems = await db('inventory')
-      .join('products', 'inventory.item_id', 'products.id')
-      .where('inventory.user_id', userId)
-      .select('products.*', 'inventory.id as inventory_id');
-
-    console.log(`📦 Inventário do user ${userId} carregado.`);
-    res.json(myItems); // Retorna JSON (O erro sumirá aqui)
-    
-  } catch (err) {
-    console.error("❌ Erro na rota de inventário:", err.message);
-    // Retornamos um array vazio em JSON para o App não tentar ler HTML
-    res.json([]); 
-  }
+  const { blocker_id, blocked_id } = req.body;
+  await db('blocks').insert({ blocker_id, blocked_id, created_at: new Date() });
+  await db('follows').where({ follower_id: blocker_id, following_id: blocked_id }).del();
+  res.json({ success: true });
 });
 
 // --- ROTA PADRÃO ---
