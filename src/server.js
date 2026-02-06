@@ -130,21 +130,53 @@ app.get('/shop', async (req, res) => {
 
 app.post('/shop/buy', async (req, res) => {
   const { userId, itemId } = req.body;
+  console.log(`🛒 Tentativa de compra: User ${userId}, Item ${itemId}`);
+  
   try {
     const user = await db('users').where({ id: userId }).first();
     const item = await db('products').where({ id: itemId }).first();
 
-    if (!user || !item) return res.status(404).json({ error: "Dados inválidos." });
-    if (Number(user.balance) < Number(item.price)) return res.status(400).json({ error: "Saldo insuficiente!" });
+    if (!user) {
+      console.log("❌ Erro: Usuário não encontrado no banco.");
+      return res.status(404).json({ error: "Usuário não encontrado." });
+    }
+    if (!item) {
+      console.log("❌ Erro: Item não encontrado na tabela products.");
+      return res.status(404).json({ error: "Item não encontrado." });
+    }
+
+    if (Number(user.balance) < Number(item.price)) {
+      console.log(`❌ Erro: Saldo insuficiente. User tem ${user.balance}, item custa ${item.price}`);
+      return res.status(400).json({ error: "Saldo insuficiente!" });
+    }
 
     await db.transaction(async (trx) => {
-      await trx('users').where({ id: userId }).update({ balance: Number(user.balance) - Number(item.price) });
-      await trx('inventory').insert({ user_id: userId, item_id: itemId, acquired_at: new Date() });
+      console.log("⚙️ Iniciando transação no banco...");
+      
+      // 1. Deduz o saldo
+      await trx('users').where({ id: userId }).update({ 
+        balance: Number(user.balance) - Number(item.price) 
+      });
+
+      // 2. Insere no inventário
+      // ATENÇÃO: Se der erro aqui, verifique se a coluna é acquired_at ou created_at
+      await trx('inventory').insert({ 
+        user_id: userId, 
+        item_id: itemId, 
+        acquired_at: new Date() 
+      });
+      
+      console.log("✅ Transação concluída com sucesso.");
     });
 
     const updatedUser = await db('users').where({ id: userId }).first();
     res.json({ success: true, user: updatedUser });
-  } catch (err) { res.status(500).json({ error: "Erro na compra." }); }
+
+  } catch (err) {
+    console.error("🔥 ERRO CRÍTICO NA COMPRA:", err.message);
+    console.error("Dica: Verifique se as tabelas 'products' e 'inventory' existem e se as colunas estão corretas.");
+    res.status(500).json({ error: "Erro interno no servidor.", details: err.message });
+  }
 });
 
 app.get('/users/:id/inventory', async (req, res) => {
