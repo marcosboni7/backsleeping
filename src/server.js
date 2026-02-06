@@ -302,19 +302,17 @@ app.post('/users/unblock', async (req, res) => {
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: "Erro unblock" }); }
 });
-// --- ROTA DA LOJA (CONECTANDO COM O QUE JÁ TEM NA DB) ---
+// --- ROTA DA LOJA (Busca os produtos que já estão na sua DB) ---
 app.get('/products', async (req, res) => {
-  try {
-    // Aqui buscamos da tabela que você já criou
-    const products = await db('products').select('*');
+  try {
+    // Certifique-se que o nome da tabela no DB é exatamente 'products'
+    const products = await db('products').select('*');
     
-    // Log para você conferir no terminal do PC se os dados estão vindo
-    console.log(`📦 Itens carregados da DB: ${products.length}`);
-    
-    res.json(products);
-  } catch (err) { 
-    console.error("❌ Erro ao acessar tabela de produtos:", err.message);
-    res.status(500).json({ error: "Erro ao carregar loja" }); 
+    console.log(`📦 Itens carregados: ${products.length}`);
+    res.json(products);
+  } catch (err) {
+    console.error("❌ Erro na DB ao buscar produtos:", err.message);
+    res.status(500).json({ error: "Erro ao carregar loja" });
   }
 });
 // --- ROTA PADRÃO ---
