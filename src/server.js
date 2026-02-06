@@ -302,17 +302,45 @@ app.post('/users/unblock', async (req, res) => {
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: "Erro unblock" }); }
 });
-// --- ROTA DA LOJA (Busca os produtos que já estão na sua DB) ---
-app.get('/products', async (req, res) => {
+// --- ROTA PARA LISTAR ITENS DA LOJA ---
+app.get('/shop', async (req, res) => {
   try {
-    // Certifique-se que o nome da tabela no DB é exatamente 'products'
-    const products = await db('products').select('*');
-    
-    console.log(`📦 Itens carregados: ${products.length}`);
-    res.json(products);
+    // Busca os produtos da sua tabela 'products'
+    const items = await db('products').select('*');
+    res.json(items);
   } catch (err) {
-    console.error("❌ Erro na DB ao buscar produtos:", err.message);
-    res.status(500).json({ error: "Erro ao carregar loja" });
+    console.error("Erro ao buscar produtos:", err.message);
+    res.status(500).json({ error: "Erro ao carregar a loja." });
+  }
+});
+
+// --- ROTA PARA PROCESSAR A COMPRA ---
+app.post('/shop/buy', async (req, res) => {
+  const { userId, itemId } = req.body;
+  
+  try {
+    // 1. Busca o usuário e o item
+    const user = await db('users').where({ id: userId }).first();
+    const item = await db('products').where({ id: itemId }).first();
+
+    if (!user || !item) return res.status(404).json({ error: "Usuário ou Item não encontrado." });
+
+    // 2. Verifica se tem saldo
+    if (Number(user.balance) < Number(item.price)) {
+      return res.status(400).json({ error: "Saldo insuficiente!" });
+    }
+
+    // 3. Deduz o valor e atualiza o banco
+    const newBalance = Number(user.balance) - Number(item.price);
+    await db('users').where({ id: userId }).update({ balance: newBalance });
+
+    // 4. (Opcional) Aqui você pode inserir o item numa tabela 'inventory' se tiver
+    // await db('inventory').insert({ user_id: userId, item_id: itemId });
+
+    res.json({ success: true, newBalance });
+  } catch (err) {
+    console.error("Erro na compra:", err.message);
+    res.status(500).json({ error: "Erro ao processar pagamento." });
   }
 });
 // --- ROTA PADRÃO ---
