@@ -119,8 +119,7 @@ app.post('/register', async (req, res) => {
   } catch (err) { res.status(400).json({ error: "Erro no cadastro." }); }
 });
 
-// --- LOJA E INVENTÁRIO (SISTEMA DE MOEDAS INTERNAS) ---
-
+// --- LOJA E INVENTÁRIO ---
 app.get('/shop', async (req, res) => {
   try {
     const items = await db('products').select('*');
@@ -130,51 +129,21 @@ app.get('/shop', async (req, res) => {
 
 app.post('/shop/buy', async (req, res) => {
   const { userId, itemId } = req.body;
-  console.log(`🛒 Tentativa de compra: User ${userId}, Item ${itemId}`);
-
   try {
     const user = await db('users').where({ id: userId }).first();
     const item = await db('products').where({ id: itemId }).first();
 
-    if (!user) {
-      console.log("❌ Erro: Usuário não encontrado no banco.");
-      return res.status(404).json({ error: "Usuário não encontrado." });
-    }
-    if (!item) {
-      console.log("❌ Erro: Item não encontrado na tabela products.");
-      return res.status(404).json({ error: "Item não encontrado." });
-    }
-
-    if (Number(user.balance) < Number(item.price)) {
-      console.log(`❌ Erro: Saldo insuficiente. User tem ${user.balance}, item custa ${item.price}`);
-      return res.status(400).json({ error: "Saldo insuficiente!" });
-    }
+    if (!user || !item) return res.status(404).json({ error: "Usuário ou Item não encontrado." });
+    if (Number(user.balance) < Number(item.price)) return res.status(400).json({ error: "Saldo insuficiente!" });
 
     await db.transaction(async (trx) => {
-      console.log("⚙️ Iniciando transação no banco...");
-
-      // 1. Deduz o saldo
-      await trx('users').where({ id: userId }).update({
-        balance: Number(user.balance) - Number(item.price)
-      });
-
-      // 2. Insere no inventário
-      // ATENÇÃO: Se der erro aqui, verifique se a coluna é acquired_at ou created_at
-      await trx('inventory').insert({
-        user_id: userId,
-        item_id: itemId,
-        acquired_at: new Date()
-      });
-
-      console.log("✅ Transação concluída com sucesso.");
+      await trx('users').where({ id: userId }).update({ balance: Number(user.balance) - Number(item.price) });
+      await trx('inventory').insert({ user_id: userId, item_id: itemId, acquired_at: new Date() });
     });
 
     const updatedUser = await db('users').where({ id: userId }).first();
     res.json({ success: true, user: updatedUser });
-
   } catch (err) {
-    console.error("🔥 ERRO CRÍTICO NA COMPRA:", err.message);
-    console.error("Dica: Verifique se as tabelas 'products' e 'inventory' existem e se as colunas estão corretas.");
     res.status(500).json({ error: "Erro interno no servidor.", details: err.message });
   }
 });
@@ -226,7 +195,7 @@ app.post('/users/follow', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Erro follow" }); }
 });
 
-// --- POSTS ---
+// --- POSTS E LIKES ---
 app.get('/posts', async (req, res) => {
   try {
     const posts = await db('posts')
@@ -235,6 +204,47 @@ app.get('/posts', async (req, res) => {
       .orderBy('posts.created_at', 'desc');
     res.json(posts);
   } catch (err) { res.status(500).json({ error: "Erro posts" }); }
+});
+
+app.post('/posts/:id/like', async (req, res) => {
+  const { id } = req.params;
+  try {
+    await db('posts').where({ id }).increment('likes_count', 1);
+    const updatedPost = await db('posts').where({ id }).first();
+    res.json({ success: true, likes: updatedPost.likes_count });
+  } catch (err) { res.status(500).json({ error: "Erro ao dar like" }); }
+});
+
+// --- COMENTÁRIOS ---
+app.post('/posts/:postId/comments', async (req, res) => {
+  const { postId } = req.params;
+  const { user_id, content } = req.body;
+  try {
+    const [newIdObj] = await db('comments').insert({
+      post_id: parseInt(postId),
+      user_id: parseInt(user_id),
+      content,
+      created_at: new Date()
+    }).returning('id');
+
+    const newId = typeof newIdObj === 'object' ? newIdObj.id : newIdObj;
+    const comment = await db('comments')
+      .join('users', 'comments.user_id', 'users.id')
+      .select('comments.*', 'users.username', 'users.avatar_url', 'users.aura_color')
+      .where('comments.id', newId).first();
+    res.status(201).json(comment);
+  } catch (err) { res.status(500).json({ error: "Erro ao comentar" }); }
+});
+
+app.get('/posts/:postId/comments', async (req, res) => {
+  try {
+    const comments = await db('comments')
+      .join('users', 'comments.user_id', 'users.id')
+      .select('comments.*', 'users.username', 'users.avatar_url', 'users.aura_color')
+      .where('comments.post_id', req.params.postId)
+      .orderBy('comments.created_at', 'asc');
+    res.json(comments);
+  } catch (err) { res.status(500).json({ error: "Erro busca comentários" }); }
 });
 
 // --- XP SYSTEM ---
@@ -248,32 +258,6 @@ app.post('/users/:id/update-xp', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Erro XP" }); }
 });
 
-
-// --- ROTA PARA BUSCAR COMENTÁRIOS DE UM POST ---
-app.get('/posts/:postId/comments', async (req, res) => {
-  const { postId } = req.params;
-
-  try {
-    const comments = await db('comments')
-      .join('users', 'comments.user_id', 'users.id')
-      .select(
-        'comments.*', 
-        'users.username', 
-        'users.avatar_url', 
-        'users.aura_color'
-      )
-      .where('comments.post_id', postId)
-      .orderBy('comments.created_at', 'asc'); // Antigos primeiro para formar uma conversa
-
-    res.json(comments);
-  } catch (err) {
-    console.error("🔥 Erro ao buscar comentários:", err.message);
-    res.status(500).json({ error: "Erro ao carregar comentários" });
-  }
-});
-
-
-// --- ROTA PADRÃO ---
 app.get('/', (req, res) => res.json({ status: "online", aura: "active" }));
 
 server.listen(PORT, '0.0.0.0', () => console.log(`🚀 Sleeping Chat rodando na porta ${PORT}`));
