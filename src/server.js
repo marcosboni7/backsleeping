@@ -317,37 +317,44 @@ app.get('/events', async (req, res) => {
 });
 
 // 2. Buscar detalhes de um evento e os posts participantes
+// ROTA PARA BUSCAR DETALHES DE UM EVENTO ESPECÍFICO
 app.get('/events/:tag', async (req, res) => {
   const { tag } = req.params;
-  
+
   try {
-    // 1. Busca os dados do evento
+    // 1. Tenta buscar o evento pela tag no banco de dados
     const event = await db('events').where({ tag }).first();
-    
+
+    // Se o evento não existir, avisa o front-end
     if (!event) {
-      return res.status(404).json({ error: "Evento não encontrado no banco." });
+      console.log(`Evento com a tag #${tag} não encontrado.`);
+      return res.status(404).json({ error: "Evento não encontrado" });
     }
 
-    // 2. Busca os posts que têm essa tag na descrição ou na coluna event_tag
+    // 2. Busca os posts que estão participando desse evento
+    // Filtramos posts que contenham a #tag na descrição
     const posts = await db('posts')
       .join('users', 'posts.user_id', 'users.id')
       .where('posts.description', 'like', `%#${tag}%`)
       .select(
-        'posts.id', 
-        'posts.title', 
-        'posts.thumbnail_url', 
-        'posts.likes_count', 
-        'users.username'
+        'posts.id',
+        'posts.title',
+        'posts.thumbnail_url',
+        'posts.likes_count',
+        'users.username',
+        'users.avatar_url'
       )
-      .orderBy('posts.likes_count', 'desc')
-      .limit(20);
+      .orderBy('posts.likes_count', 'desc'); // Ranking por popularidade
 
-    // Retorna o objeto combinado
-    res.json({ event, posts });
+    // Envia o objeto formatado exatamente como o front-end espera
+    res.json({
+      event: event,
+      posts: posts
+    });
 
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Erro interno no servidor" });
+  } catch (error) {
+    console.error("Erro na rota /events/:tag ->", error);
+    res.status(500).json({ error: "Erro interno no servidor ao buscar evento" });
   }
 });
 
