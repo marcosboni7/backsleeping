@@ -197,13 +197,28 @@ app.post('/users/follow', async (req, res) => {
 
 // --- POSTS E LIKES ---
 app.get('/posts', async (req, res) => {
+  const { userId } = req.query; // Vamos passar o id do user logado na URL: /posts?userId=1
+
   try {
     const posts = await db('posts')
       .join('users', 'posts.user_id', 'users.id')
       .select('posts.*', 'users.username', 'users.avatar_url', 'users.aura_color')
       .orderBy('posts.created_at', 'desc');
+
+    // Se tiver um userId logado, vamos marcar quais posts ele curtiu
+    if (userId) {
+      const myLikes = await db('post_likes').where({ user_id: userId }).pluck('post_id');
+      const postsWithLikeInfo = posts.map(post => ({
+        ...post,
+        isLiked: myLikes.includes(post.id)
+      }));
+      return res.json(postsWithLikeInfo);
+    }
+
     res.json(posts);
-  } catch (err) { res.status(500).json({ error: "Erro posts" }); }
+  } catch (err) {
+    res.status(500).json({ error: "Erro posts" });
+  }
 });
 
 app.post('/posts/:id/like', async (req, res) => {
