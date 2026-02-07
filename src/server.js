@@ -249,25 +249,12 @@ app.post('/users/:id/update-xp', async (req, res) => {
 });
 
 
-app.post('/posts/:postId/comments', async (req, res) => {
+// --- ROTA PARA BUSCAR COMENTÁRIOS DE UM POST ---
+app.get('/posts/:postId/comments', async (req, res) => {
   const { postId } = req.params;
-  const { user_id, content } = req.body;
-
-  console.log(`💬 Tentativa de comentário no post ${postId} pelo user ${user_id}`);
 
   try {
-    // Inserção simples
-    const [newCommentId] = await db('comments')
-      .insert({
-        post_id: parseInt(postId),
-        user_id: parseInt(user_id),
-        content: content,
-        created_at: new Date()
-      })
-      .returning('id');
-
-    // Busca o comentário recém criado com os dados do autor para o App exibir na hora
-    const commentWithAuthor = await db('comments')
+    const comments = await db('comments')
       .join('users', 'comments.user_id', 'users.id')
       .select(
         'comments.*', 
@@ -275,13 +262,13 @@ app.post('/posts/:postId/comments', async (req, res) => {
         'users.avatar_url', 
         'users.aura_color'
       )
-      .where('comments.id', typeof newCommentId === 'object' ? newCommentId.id : newCommentId)
-      .first();
+      .where('comments.post_id', postId)
+      .orderBy('comments.created_at', 'asc'); // Antigos primeiro para formar uma conversa
 
-    res.status(201).json(commentWithAuthor);
+    res.json(comments);
   } catch (err) {
-    console.error("🔥 ERRO CRÍTICO NO COMENTÁRIO:", err.message);
-    res.status(500).json({ error: "Erro ao salvar comentário", details: err.message });
+    console.error("🔥 Erro ao buscar comentários:", err.message);
+    res.status(500).json({ error: "Erro ao carregar comentários" });
   }
 });
 
