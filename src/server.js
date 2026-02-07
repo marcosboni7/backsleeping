@@ -24,15 +24,16 @@ cloudinary.config({
   api_secret: (process.env.CLOUDINARY_API_SECRET || '').trim()
 });
 
+// Configuração do Multer para processar arquivos em memória
 const storage = multer.memoryStorage();
 const upload = multer({
   storage,
-  limits: { fileSize: 50 * 1024 * 1024 }
+  limits: { fileSize: 100 * 1024 * 1024 } // Limite de 100MB para vídeos
 });
 
 app.use(cors());
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ limit: '100mb', extended: true }));
 
 const roomUsers = {};
 
@@ -119,6 +120,68 @@ app.post('/register', async (req, res) => {
   } catch (err) { res.status(400).json({ error: "Erro no cadastro." }); }
 });
 
+// --- ROTA DE UPLOAD DE POSTS ---
+app.post('/posts/upload', upload.fields([{ name: 'video' }, { name: 'thumbnail' }]), async (req, res) => {
+  try {
+    const { userId, title, description } = req.body;
+
+    if (!req.files || !req.files['video']) {
+      return res.status(400).json({ error: "O vídeo é obrigatório." });
+    }
+
+    // 1. Upload do Vídeo para o Cloudinary usando Stream
+    const videoUpload = () => {
+      return new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          { resource_type: "video", folder: "posts/videos" },
+          (error, result) => {
+            if (error) reject(error);
+            else resolve(result);
+          }
+        );
+        stream.end(req.files['video'][0].buffer);
+      });
+    };
+
+    const videoResult = await videoUpload();
+
+    // 2. Upload da Thumbnail (se existir)
+    let thumbUrl = null;
+    if (req.files['thumbnail']) {
+      const thumbUpload = () => {
+        return new Promise((resolve, reject) => {
+          const stream = cloudinary.uploader.upload_stream(
+            { folder: "posts/thumbnails" },
+            (error, result) => {
+              if (error) reject(error);
+              else resolve(result);
+            }
+          );
+          stream.end(req.files['thumbnail'][0].buffer);
+        });
+      };
+      const thumbResult = await thumbUpload();
+      thumbUrl = thumbResult.secure_url;
+    }
+
+    // 3. Salva no Banco de Dados
+    const [newPost] = await db('posts').insert({
+      user_id: userId,
+      title: title,
+      description: description,
+      video_url: videoResult.secure_url,
+      thumbnail_url: thumbUrl || videoResult.secure_url.replace('.mp4', '.jpg'), // Fallback para thumb automática
+      likes_count: 0,
+      created_at: new Date()
+    }).returning('*');
+
+    res.status(201).json(newPost);
+  } catch (err) {
+    console.error("🔥 Erro no Upload:", err);
+    res.status(500).json({ error: "Falha ao manifestar post no servidor." });
+  }
+});
+
 // --- LOJA E INVENTÁRIO ---
 app.get('/shop', async (req, res) => {
   try {
@@ -197,15 +260,13 @@ app.post('/users/follow', async (req, res) => {
 
 // --- POSTS E LIKES ---
 app.get('/posts', async (req, res) => {
-  const { userId } = req.query; // Vamos passar o id do user logado na URL: /posts?userId=1
-
+  const { userId } = req.query;
   try {
     const posts = await db('posts')
       .join('users', 'posts.user_id', 'users.id')
       .select('posts.*', 'users.username', 'users.avatar_url', 'users.aura_color')
       .orderBy('posts.created_at', 'desc');
 
-    // Se tiver um userId logado, vamos marcar quais posts ele curtiu
     if (userId) {
       const myLikes = await db('post_likes').where({ user_id: userId }).pluck('post_id');
       const postsWithLikeInfo = posts.map(post => ({
@@ -214,66 +275,40 @@ app.get('/posts', async (req, res) => {
       }));
       return res.json(postsWithLikeInfo);
     }
-
     res.json(posts);
-  } catch (err) {
-    res.status(500).json({ error: "Erro posts" });
-  }
+  } catch (err) { res.status(500).json({ error: "Erro posts" }); }
 });
 
 app.post('/posts/:id/like', async (req, res) => {
   const { id } = req.params;
   const { userId } = req.body; 
-
   if (!userId) return res.status(400).json({ error: "User ID necessário" });
 
   try {
-    const existingLike = await db('post_likes')
-      .where({ post_id: id, user_id: userId })
-      .first();
-
+    const existingLike = await db('post_likes').where({ post_id: id, user_id: userId }).first();
     const post = await db('posts').where({ id }).first();
     if (!post) return res.status(404).json({ error: "Post não encontrado" });
 
     if (existingLike) {
-      // --- DESCURTIR ---
       await db('post_likes').where({ id: existingLike.id }).del();
-      
-      // ✅ TRAVA DE SEGURANÇA: Só decrementa se for maior que zero
-      if (post.likes_count > 0) {
-        await db('posts').where({ id }).decrement('likes_count', 1);
-      }
+      if (post.likes_count > 0) await db('posts').where({ id }).decrement('likes_count', 1);
     } else {
-      // --- CURTIR ---
       await db('post_likes').insert({ post_id: id, user_id: userId });
       await db('posts').where({ id }).increment('likes_count', 1);
     }
-
-    // Busca o valor real e atualizado direto do banco
     const updatedPost = await db('posts').where({ id }).first();
-    
-    res.json({ 
-      success: true, 
-      likes: updatedPost.likes_count || 0, // Garante que não retorne null
-      liked: !existingLike 
-    });
-  } catch (err) {
-    console.error("🔥 Erro no Like:", err.message);
-    res.status(500).json({ error: "Erro ao processar like" });
-  }
+    res.json({ success: true, likes: updatedPost.likes_count || 0, liked: !existingLike });
+  } catch (err) { res.status(500).json({ error: "Erro ao processar like" }); }
 });
+
 // --- COMENTÁRIOS ---
 app.post('/posts/:postId/comments', async (req, res) => {
   const { postId } = req.params;
   const { user_id, content } = req.body;
   try {
     const [newIdObj] = await db('comments').insert({
-      post_id: parseInt(postId),
-      user_id: parseInt(user_id),
-      content,
-      created_at: new Date()
+      post_id: parseInt(postId), user_id: parseInt(user_id), content, created_at: new Date()
     }).returning('id');
-
     const newId = typeof newIdObj === 'object' ? newIdObj.id : newIdObj;
     const comment = await db('comments')
       .join('users', 'comments.user_id', 'users.id')
@@ -294,102 +329,39 @@ app.get('/posts/:postId/comments', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Erro busca comentários" }); }
 });
 
-// --- XP SYSTEM ---
-app.post('/users/:id/update-xp', async (req, res) => {
-  try {
-    const user = await db('users').where({ id: req.params.id }).first();
-    const multiplier = (user.role === 'admin' || user.role === 'staff') ? 10 : 1;
-    const finalXp = Number(user.xp || 0) + (5 * multiplier);
-    await db('users').where({ id: req.params.id }).update({ xp: finalXp });
-    res.json({ success: true, xp: finalXp });
-  } catch (err) { res.status(500).json({ error: "Erro XP" }); }
-});
 // --- ROTAS DE EVENTOS ---
-
-// 1. Listar todos os eventos ativos para os banners
 app.get('/events', async (req, res) => {
   try {
     const events = await db('events').where('active', true).orderBy('created_at', 'desc');
     res.json(events);
-  } catch (err) {
-    res.status(500).json({ error: "Erro ao buscar eventos" });
-  }
+  } catch (err) { res.status(500).json({ error: "Erro ao buscar eventos" }); }
 });
 
-// 2. Buscar detalhes de um evento e os posts participantes
-// ROTA PARA BUSCAR DETALHES DE UM EVENTO ESPECÍFICO
-app.get('/events/:tag', async (req, res) => {
-  // Isso remove o '#' caso o front-end envie, garantindo que combine com o banco
-  const tag = req.params.tag.replace('#', ''); 
-
-  try {
-    const event = await db('events').where({ tag }).first();
-
-    if (!event) {
-      console.log(`Evento com a tag ${tag} não encontrado no banco.`);
-      return res.status(404).json({ error: "Evento não encontrado" });
-    }
-
-    const posts = await db('posts')
-      .join('users', 'posts.user_id', 'users.id')
-      .where('posts.description', 'like', `%#${tag}%`) // Procura a #tag no texto do post
-      .select('posts.*', 'users.username')
-      .orderBy('posts.likes_count', 'desc');
-
-    res.json({ event, posts });
-  } catch (error) {
-    res.status(500).json({ error: "Erro no servidor" });
-  }
-// ROTA PARA BUSCAR DETALHES DE UM EVENTO ESPECÍFICO (COM AUTO-CREATE)
 app.get('/events/:tag', async (req, res) => {
   const tag = req.params.tag.replace('#', ''); 
-
   try {
     let event = await db('events').where({ tag }).first();
-
-    // --- SE O EVENTO NÃO EXISTIR NO BANCO, VAMOS CRIAR AUTOMATICAMENTE ---
     if (!event) {
-      console.log(`✨ Criando evento automático para a tag: ${tag}`);
-      
       const eventData = {
         tag: tag,
         title: tag === 'AuraGold' ? 'Desafio Aura Dourada' : 'Festival de Inverno',
-        description: 'Participe deste desafio incrível! Poste seu vídeo com a tag #' + tag + ' para ganhar visibilidade e Auras.',
-        banner_url: tag === 'AuraGold' 
-          ? 'https://images.unsplash.com/photo-1614850523296-d8c1af93d400' 
-          : 'https://images.unsplash.com/photo-1483366759340-bc5ca0d630b4',
+        description: 'Poste seu vídeo com a tag #' + tag + '!',
+        banner_url: 'https://images.unsplash.com/photo-1614850523296-d8c1af93d400',
         active: true,
-        end_date: new Date('2026-12-31') // Data longa para testes
+        end_date: new Date('2026-12-31')
       };
-
-      // Insere e recupera o novo evento
-      const [newId] = await db('events').insert(eventData).returning('id');
-      event = await db('events').where({ id: typeof newId === 'object' ? newId.id : newId }).first();
+      const [inserted] = await db('events').insert(eventData).returning('*');
+      event = inserted;
     }
-
-    // Busca os posts participantes
     const posts = await db('posts')
       .join('users', 'posts.user_id', 'users.id')
       .where('posts.description', 'like', `%#${tag}%`)
       .select('posts.*', 'users.username')
       .orderBy('posts.likes_count', 'desc');
-
     res.json({ event, posts });
-  } catch (error) {
-    console.error("🔥 Erro na rota de eventos:", error.message);
-    res.status(500).json({ error: "Erro ao buscar ou criar evento" });
-  }
+  } catch (error) { res.status(500).json({ error: "Erro no servidor de eventos" }); }
 });
-// 3. Rota administrativa para você criar eventos (pode usar via Postman ou Insomnia)
-app.post('/events', async (req, res) => {
-  const { title, tag, description, banner_url, end_date } = req.body;
-  try {
-    await db('events').insert({ title, tag, description, banner_url, end_date });
-    res.json({ success: true, message: "Evento criado com sucesso!" });
-  } catch (err) {
-    res.status(500).json({ error: "Erro ao criar evento. Tag já existe?" });
-  }
-});
+
 app.get('/', (req, res) => res.json({ status: "online", aura: "active" }));
 
 server.listen(PORT, '0.0.0.0', () => console.log(`🚀 Sleeping Chat rodando na porta ${PORT}`));
