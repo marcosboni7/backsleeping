@@ -304,7 +304,63 @@ app.post('/users/:id/update-xp', async (req, res) => {
     res.json({ success: true, xp: finalXp });
   } catch (err) { res.status(500).json({ error: "Erro XP" }); }
 });
+// --- ROTAS DE EVENTOS ---
 
+// 1. Listar todos os eventos ativos para os banners
+app.get('/events', async (req, res) => {
+  try {
+    const events = await db('events').where('active', true).orderBy('created_at', 'desc');
+    res.json(events);
+  } catch (err) {
+    res.status(500).json({ error: "Erro ao buscar eventos" });
+  }
+});
+
+// 2. Buscar detalhes de um evento e os posts participantes
+app.get('/events/:tag', async (req, res) => {
+  const { tag } = req.params;
+  
+  try {
+    // 1. Busca os dados do evento
+    const event = await db('events').where({ tag }).first();
+    
+    if (!event) {
+      return res.status(404).json({ error: "Evento não encontrado no banco." });
+    }
+
+    // 2. Busca os posts que têm essa tag na descrição ou na coluna event_tag
+    const posts = await db('posts')
+      .join('users', 'posts.user_id', 'users.id')
+      .where('posts.description', 'like', `%#${tag}%`)
+      .select(
+        'posts.id', 
+        'posts.title', 
+        'posts.thumbnail_url', 
+        'posts.likes_count', 
+        'users.username'
+      )
+      .orderBy('posts.likes_count', 'desc')
+      .limit(20);
+
+    // Retorna o objeto combinado
+    res.json({ event, posts });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erro interno no servidor" });
+  }
+});
+
+// 3. Rota administrativa para você criar eventos (pode usar via Postman ou Insomnia)
+app.post('/events', async (req, res) => {
+  const { title, tag, description, banner_url, end_date } = req.body;
+  try {
+    await db('events').insert({ title, tag, description, banner_url, end_date });
+    res.json({ success: true, message: "Evento criado com sucesso!" });
+  } catch (err) {
+    res.status(500).json({ error: "Erro ao criar evento. Tag já existe?" });
+  }
+});
 app.get('/', (req, res) => res.json({ status: "online", aura: "active" }));
 
 server.listen(PORT, '0.0.0.0', () => console.log(`🚀 Sleeping Chat rodando na porta ${PORT}`));
