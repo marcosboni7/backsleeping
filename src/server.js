@@ -223,34 +223,42 @@ app.get('/posts', async (req, res) => {
 
 app.post('/posts/:id/like', async (req, res) => {
   const { id } = req.params;
-  const { userId } = req.body; // O App precisa mandar o userId no body
+  const { userId } = req.body; 
 
   if (!userId) return res.status(400).json({ error: "User ID necessário" });
 
   try {
-    // 1. Verifica se o usuário já deu like nesse post
     const existingLike = await db('post_likes')
       .where({ post_id: id, user_id: userId })
       .first();
 
+    const post = await db('posts').where({ id }).first();
+    if (!post) return res.status(404).json({ error: "Post não encontrado" });
+
     if (existingLike) {
-      // Se já existe, o usuário clicou de novo para "DESCURTIR"
+      // --- DESCURTIR ---
       await db('post_likes').where({ id: existingLike.id }).del();
-      await db('posts').where({ id }).decrement('likes_count', 1);
+      
+      // ✅ TRAVA DE SEGURANÇA: Só decrementa se for maior que zero
+      if (post.likes_count > 0) {
+        await db('posts').where({ id }).decrement('likes_count', 1);
+      }
     } else {
-      // Se não existe, ele está dando LIKE agora
+      // --- CURTIR ---
       await db('post_likes').insert({ post_id: id, user_id: userId });
       await db('posts').where({ id }).increment('likes_count', 1);
     }
 
+    // Busca o valor real e atualizado direto do banco
     const updatedPost = await db('posts').where({ id }).first();
+    
     res.json({ 
       success: true, 
-      likes: updatedPost.likes_count, 
-      liked: !existingLike // Retorna se ficou com like ou não
+      likes: updatedPost.likes_count || 0, // Garante que não retorne null
+      liked: !existingLike 
     });
   } catch (err) {
-    console.error(err);
+    console.error("🔥 Erro no Like:", err.message);
     res.status(500).json({ error: "Erro ao processar like" });
   }
 });
