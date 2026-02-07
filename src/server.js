@@ -340,6 +340,45 @@ app.get('/events/:tag', async (req, res) => {
   } catch (error) {
     res.status(500).json({ error: "Erro no servidor" });
   }
+// ROTA PARA BUSCAR DETALHES DE UM EVENTO ESPECÍFICO (COM AUTO-CREATE)
+app.get('/events/:tag', async (req, res) => {
+  const tag = req.params.tag.replace('#', ''); 
+
+  try {
+    let event = await db('events').where({ tag }).first();
+
+    // --- SE O EVENTO NÃO EXISTIR NO BANCO, VAMOS CRIAR AUTOMATICAMENTE ---
+    if (!event) {
+      console.log(`✨ Criando evento automático para a tag: ${tag}`);
+      
+      const eventData = {
+        tag: tag,
+        title: tag === 'AuraGold' ? 'Desafio Aura Dourada' : 'Festival de Inverno',
+        description: 'Participe deste desafio incrível! Poste seu vídeo com a tag #' + tag + ' para ganhar visibilidade e Auras.',
+        banner_url: tag === 'AuraGold' 
+          ? 'https://images.unsplash.com/photo-1614850523296-d8c1af93d400' 
+          : 'https://images.unsplash.com/photo-1483366759340-bc5ca0d630b4',
+        active: true,
+        end_date: new Date('2026-12-31') // Data longa para testes
+      };
+
+      // Insere e recupera o novo evento
+      const [newId] = await db('events').insert(eventData).returning('id');
+      event = await db('events').where({ id: typeof newId === 'object' ? newId.id : newId }).first();
+    }
+
+    // Busca os posts participantes
+    const posts = await db('posts')
+      .join('users', 'posts.user_id', 'users.id')
+      .where('posts.description', 'like', `%#${tag}%`)
+      .select('posts.*', 'users.username')
+      .orderBy('posts.likes_count', 'desc');
+
+    res.json({ event, posts });
+  } catch (error) {
+    console.error("🔥 Erro na rota de eventos:", error.message);
+    res.status(500).json({ error: "Erro ao buscar ou criar evento" });
+  }
 });
 // 3. Rota administrativa para você criar eventos (pode usar via Postman ou Insomnia)
 app.post('/events', async (req, res) => {
