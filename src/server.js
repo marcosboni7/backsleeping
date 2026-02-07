@@ -319,45 +319,28 @@ app.get('/events', async (req, res) => {
 // 2. Buscar detalhes de um evento e os posts participantes
 // ROTA PARA BUSCAR DETALHES DE UM EVENTO ESPECÍFICO
 app.get('/events/:tag', async (req, res) => {
-  const { tag } = req.params;
+  // Isso remove o '#' caso o front-end envie, garantindo que combine com o banco
+  const tag = req.params.tag.replace('#', ''); 
 
   try {
-    // 1. Tenta buscar o evento pela tag no banco de dados
     const event = await db('events').where({ tag }).first();
 
-    // Se o evento não existir, avisa o front-end
     if (!event) {
-      console.log(`Evento com a tag #${tag} não encontrado.`);
+      console.log(`Evento com a tag ${tag} não encontrado no banco.`);
       return res.status(404).json({ error: "Evento não encontrado" });
     }
 
-    // 2. Busca os posts que estão participando desse evento
-    // Filtramos posts que contenham a #tag na descrição
     const posts = await db('posts')
       .join('users', 'posts.user_id', 'users.id')
-      .where('posts.description', 'like', `%#${tag}%`)
-      .select(
-        'posts.id',
-        'posts.title',
-        'posts.thumbnail_url',
-        'posts.likes_count',
-        'users.username',
-        'users.avatar_url'
-      )
-      .orderBy('posts.likes_count', 'desc'); // Ranking por popularidade
+      .where('posts.description', 'like', `%#${tag}%`) // Procura a #tag no texto do post
+      .select('posts.*', 'users.username')
+      .orderBy('posts.likes_count', 'desc');
 
-    // Envia o objeto formatado exatamente como o front-end espera
-    res.json({
-      event: event,
-      posts: posts
-    });
-
+    res.json({ event, posts });
   } catch (error) {
-    console.error("Erro na rota /events/:tag ->", error);
-    res.status(500).json({ error: "Erro interno no servidor ao buscar evento" });
+    res.status(500).json({ error: "Erro no servidor" });
   }
 });
-
 // 3. Rota administrativa para você criar eventos (pode usar via Postman ou Insomnia)
 app.post('/events', async (req, res) => {
   const { title, tag, description, banner_url, end_date } = req.body;
