@@ -1,20 +1,20 @@
 const express = require('express');
 const cors = require('cors');
-const db = require('./config/db'); 
+const db = require('./config/db');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const multer = require('multer'); 
-const http = require('http'); 
-const { Server } = require('socket.io'); 
+const multer = require('multer');
+const http = require('http');
+const { Server } = require('socket.io');
 const cloudinary = require('cloudinary').v2;
 
 const app = express();
-const server = http.createServer(app); 
+const server = http.createServer(app);
 const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] }
 });
 
-const PORT = process.env.PORT || 3333; 
+const PORT = process.env.PORT || 3333;
 const JWT_SECRET = process.env.JWT_SECRET || 'minha_chave_galatica_secreta';
 
 // --- CONFIGURAÇÃO CLOUDINARY ---
@@ -25,16 +25,16 @@ cloudinary.config({
 });
 
 const storage = multer.memoryStorage();
-const upload = multer({ 
+const upload = multer({
   storage,
-  limits: { fileSize: 50 * 1024 * 1024 } 
+  limits: { fileSize: 50 * 1024 * 1024 }
 });
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-const roomUsers = {}; 
+const roomUsers = {};
 
 // --- CHAT (SOCKET.IO) ---
 io.on('connection', (socket) => {
@@ -46,21 +46,21 @@ io.on('connection', (socket) => {
   socket.on('join_room', async (data) => {
     const room = String(typeof data === 'string' ? data : data.room);
     const username = (data && data.user) ? data.user : 'Visitante';
-    
+
     socket.join(room);
     socket.currentRoom = room;
     socket.username = username;
 
     if (!roomUsers[room]) roomUsers[room] = [];
     if (!roomUsers[room].includes(username)) roomUsers[room].push(username);
-    
+
     io.to(room).emit('room_users', { count: roomUsers[room].length, users: roomUsers[room] });
-    
+
     try {
       const messages = await db('messages').where({ room: room }).orderBy('created_at', 'asc').limit(50);
       socket.emit('previous_messages', messages);
-    } catch (err) { 
-      socket.emit('previous_messages', []); 
+    } catch (err) {
+      socket.emit('previous_messages', []);
     }
   });
 
@@ -68,14 +68,14 @@ io.on('connection', (socket) => {
     try {
       const userRecord = await db('users').where({ username: data.user }).first();
       const messageData = {
-        room: String(data.room), 
-        user: String(data.user), 
-        text: String(data.text), 
-        aura_color: userRecord?.aura_color || '#ffffff', 
-        avatar_url: userRecord?.avatar_url || 'https://www.pngall.com/wp-content/uploads/5/Profile-Avatar-PNG.png', 
+        room: String(data.room),
+        user: String(data.user),
+        text: String(data.text),
+        aura_color: userRecord?.aura_color || '#ffffff',
+        avatar_url: userRecord?.avatar_url || 'https://www.pngall.com/wp-content/uploads/5/Profile-Avatar-PNG.png',
         role: userRecord?.role || 'user',
-        sender_id: data.sender_id || userRecord?.id, 
-        receiver_id: data.receiver_id || null, 
+        sender_id: data.sender_id || userRecord?.id,
+        receiver_id: data.receiver_id || null,
         created_at: new Date()
       };
       await db('messages').insert(messageData);
@@ -131,7 +131,7 @@ app.get('/shop', async (req, res) => {
 app.post('/shop/buy', async (req, res) => {
   const { userId, itemId } = req.body;
   console.log(`🛒 Tentativa de compra: User ${userId}, Item ${itemId}`);
-  
+
   try {
     const user = await db('users').where({ id: userId }).first();
     const item = await db('products').where({ id: itemId }).first();
@@ -152,20 +152,20 @@ app.post('/shop/buy', async (req, res) => {
 
     await db.transaction(async (trx) => {
       console.log("⚙️ Iniciando transação no banco...");
-      
+
       // 1. Deduz o saldo
-      await trx('users').where({ id: userId }).update({ 
-        balance: Number(user.balance) - Number(item.price) 
+      await trx('users').where({ id: userId }).update({
+        balance: Number(user.balance) - Number(item.price)
       });
 
       // 2. Insere no inventário
       // ATENÇÃO: Se der erro aqui, verifique se a coluna é acquired_at ou created_at
-      await trx('inventory').insert({ 
-        user_id: userId, 
-        item_id: itemId, 
-        acquired_at: new Date() 
+      await trx('inventory').insert({
+        user_id: userId,
+        item_id: itemId,
+        acquired_at: new Date()
       });
-      
+
       console.log("✅ Transação concluída com sucesso.");
     });
 
@@ -247,6 +247,43 @@ app.post('/users/:id/update-xp', async (req, res) => {
     res.json({ success: true, xp: finalXp });
   } catch (err) { res.status(500).json({ error: "Erro XP" }); }
 });
+
+
+// --- ROTA PARA COMENTAR EM POSTS ---
+app.post('/posts/:postId/comments', async (req, res) => {
+  const { postId } = req.params;
+  const { user_id, content } = req.body;
+
+  try {
+    // 1. Verifica se o post existe
+    const post = await db('posts').where({ id: postId }).first();
+    if (!post) {
+      return res.status(404).json({ error: "Post não encontrado" });
+    }
+
+    // 2. Insere o comentário no banco
+    // Certifique-se de que a tabela 'comments' existe no seu banco!
+    const [commentId] = await db('comments').insert({
+      post_id: postId,
+      user_id: user_id,
+      content: content,
+      created_at: new Date()
+    }).returning('id');
+
+    // 3. Busca os dados do usuário para retornar no comentário (ex: avatar, nome)
+    const newComment = await db('comments')
+      .join('users', 'comments.user_id', 'users.id')
+      .select('comments.*', 'users.username', 'users.avatar_url', 'users.aura_color')
+      .where('comments.id', commentId)
+      .first();
+
+    res.status(201).json(newComment);
+  } catch (err) {
+    console.error("🔥 Erro ao comentar:", err);
+    res.status(500).json({ error: "Erro interno ao salvar comentário" });
+  }
+});
+
 
 // --- ROTA PADRÃO ---
 app.get('/', (req, res) => res.json({ status: "online", aura: "active" }));
