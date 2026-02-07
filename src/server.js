@@ -249,38 +249,39 @@ app.post('/users/:id/update-xp', async (req, res) => {
 });
 
 
-// --- ROTA PARA COMENTAR EM POSTS ---
 app.post('/posts/:postId/comments', async (req, res) => {
   const { postId } = req.params;
   const { user_id, content } = req.body;
 
+  console.log(`💬 Tentativa de comentário no post ${postId} pelo user ${user_id}`);
+
   try {
-    // 1. Verifica se o post existe
-    const post = await db('posts').where({ id: postId }).first();
-    if (!post) {
-      return res.status(404).json({ error: "Post não encontrado" });
-    }
+    // Inserção simples
+    const [newCommentId] = await db('comments')
+      .insert({
+        post_id: parseInt(postId),
+        user_id: parseInt(user_id),
+        content: content,
+        created_at: new Date()
+      })
+      .returning('id');
 
-    // 2. Insere o comentário no banco
-    // Certifique-se de que a tabela 'comments' existe no seu banco!
-    const [commentId] = await db('comments').insert({
-      post_id: postId,
-      user_id: user_id,
-      content: content,
-      created_at: new Date()
-    }).returning('id');
-
-    // 3. Busca os dados do usuário para retornar no comentário (ex: avatar, nome)
-    const newComment = await db('comments')
+    // Busca o comentário recém criado com os dados do autor para o App exibir na hora
+    const commentWithAuthor = await db('comments')
       .join('users', 'comments.user_id', 'users.id')
-      .select('comments.*', 'users.username', 'users.avatar_url', 'users.aura_color')
-      .where('comments.id', commentId)
+      .select(
+        'comments.*', 
+        'users.username', 
+        'users.avatar_url', 
+        'users.aura_color'
+      )
+      .where('comments.id', typeof newCommentId === 'object' ? newCommentId.id : newCommentId)
       .first();
 
-    res.status(201).json(newComment);
+    res.status(201).json(commentWithAuthor);
   } catch (err) {
-    console.error("🔥 Erro ao comentar:", err);
-    res.status(500).json({ error: "Erro interno ao salvar comentário" });
+    console.error("🔥 ERRO CRÍTICO NO COMENTÁRIO:", err.message);
+    res.status(500).json({ error: "Erro ao salvar comentário", details: err.message });
   }
 });
 
